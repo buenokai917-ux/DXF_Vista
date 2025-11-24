@@ -315,8 +315,12 @@ const parseProperty = (code: number, value: string, entity: Partial<DxfEntity>) 
       break;
     
     case 41: // Scale X (Insert)
-      if (!entity.scale) entity.scale = { x: 1, y: 1 };
-      entity.scale.x = valNum;
+      // If scale hasn't been set, init it to valNum, valNum (uniform scale assumption)
+      if (!entity.scale) {
+          entity.scale = { x: valNum, y: valNum };
+      } else {
+          entity.scale.x = valNum;
+      }
       break;
     case 42: // Scale Y (Insert)
       if (!entity.scale) entity.scale = { x: 1, y: 1 };
