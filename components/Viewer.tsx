@@ -21,38 +21,39 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
     if (onRef) onRef(canvasRef.current);
   }, [onRef]);
 
-  // Calculate Bounds
-  const getBounds = useCallback((entities: DxfEntity[]): Bounds => {
+  // Calculate Bounds (Recursive for Blocks)
+  const getBounds = useCallback((entities: DxfEntity[], blocks?: Record<string, DxfEntity[]>): Bounds => {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     let hasEntities = false;
 
-    const checkPoint = (p?: Point) => {
-      if (!p) return;
+    const checkPoint = (x: number, y: number) => {
       hasEntities = true;
-      if (p.x < minX) minX = p.x;
-      if (p.y < minY) minY = p.y;
-      if (p.x > maxX) maxX = p.x;
-      if (p.y > maxY) maxY = p.y;
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
     };
 
-    entities.forEach(ent => {
-      if (ent.type === EntityType.LINE) {
-        checkPoint(ent.start);
-        checkPoint(ent.end);
-      } else if (ent.type === EntityType.LWPOLYLINE && ent.vertices) {
-        ent.vertices.forEach(checkPoint);
-      } else if (ent.type === EntityType.CIRCLE || ent.type === EntityType.ARC) {
-        if (ent.center && ent.radius) {
-          checkPoint({ x: ent.center.x - ent.radius, y: ent.center.y - ent.radius });
-          checkPoint({ x: ent.center.x + ent.radius, y: ent.center.y + ent.radius });
-        }
-      } else if ((ent.type === EntityType.TEXT || ent.type === EntityType.INSERT) && ent.start) {
-        checkPoint(ent.start);
-      } else if (ent.type === EntityType.DIMENSION) {
-          checkPoint(ent.start); 
-          checkPoint(ent.end); 
-      }
-    });
+    const processEntity = (ent: DxfEntity, offsetX = 0, offsetY = 0) => {
+       if (ent.type === EntityType.LINE && ent.start && ent.end) {
+         checkPoint(ent.start.x + offsetX, ent.start.y + offsetY);
+         checkPoint(ent.end.x + offsetX, ent.end.y + offsetY);
+       } else if (ent.type === EntityType.LWPOLYLINE && ent.vertices) {
+         ent.vertices.forEach(v => checkPoint(v.x + offsetX, v.y + offsetY));
+       } else if ((ent.type === EntityType.CIRCLE || ent.type === EntityType.ARC) && ent.center && ent.radius) {
+         checkPoint(ent.center.x + offsetX - ent.radius, ent.center.y + offsetY - ent.radius);
+         checkPoint(ent.center.x + offsetX + ent.radius, ent.center.y + offsetY + ent.radius);
+       } else if ((ent.type === EntityType.TEXT || ent.type === EntityType.INSERT) && ent.start) {
+         checkPoint(ent.start.x + offsetX, ent.start.y + offsetY);
+       } else if (ent.type === EntityType.DIMENSION) {
+          if (ent.measureStart) checkPoint(ent.measureStart.x + offsetX, ent.measureStart.y + offsetY);
+          if (ent.measureEnd) checkPoint(ent.measureEnd.x + offsetX, ent.measureEnd.y + offsetY);
+          if (ent.start) checkPoint(ent.start.x + offsetX, ent.start.y + offsetY);
+          if (ent.end) checkPoint(ent.end.x + offsetX, ent.end.y + offsetY);
+       }
+    };
+
+    entities.forEach(ent => processEntity(ent));
 
     if (!hasEntities) return { minX: 0, minY: 0, maxX: 100, maxY: 100 };
     return { minX, minY, maxX, maxY };
@@ -62,7 +63,7 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
   const fitToScreen = useCallback(() => {
     if (!data || !containerRef.current) return;
     
-    const bounds = getBounds(data.entities);
+    const bounds = getBounds(data.entities, data.blocks);
     const rect = containerRef.current.getBoundingClientRect();
     
     const dataWidth = bounds.maxX - bounds.minX;
@@ -157,116 +158,108 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
     ctx.scale(dpr, dpr);
     ctx.fillStyle = '#0f172a';
     ctx.fillRect(0, 0, rect.width, rect.height);
-
+    
     const toScreenX = (x: number) => x * transform.k + transform.x;
     const toScreenY = (y: number) => rect.height - (y * transform.k + transform.y);
 
-    ctx.lineWidth = 1; 
+    // Set consistent line width (~2px visual width)
+    const visualLineWidth = 2;
+    ctx.lineWidth = visualLineWidth / transform.k; 
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
 
-    data.entities.forEach(ent => {
-      if (!activeLayers.has(ent.layer)) return;
+    // Helper to draw a single entity
+    const drawEntity = (ent: DxfEntity, contextLayer: string) => {
+       const effectiveLayer = ent.layer === '0' ? contextLayer : ent.layer;
+       if (!activeLayers.has(effectiveLayer)) return;
+       
+       const color = layerColors[effectiveLayer] || '#e2e8f0';
+       ctx.strokeStyle = color;
+       ctx.fillStyle = color;
 
-      const color = layerColors[ent.layer] || '#e2e8f0';
-      ctx.strokeStyle = color;
-      ctx.fillStyle = color;
+       ctx.beginPath();
 
-      ctx.beginPath();
-
-      if (ent.type === EntityType.LINE && ent.start && ent.end) {
-        ctx.moveTo(toScreenX(ent.start.x), toScreenY(ent.start.y));
-        ctx.lineTo(toScreenX(ent.end.x), toScreenY(ent.end.y));
+       if (ent.type === EntityType.LINE && ent.start && ent.end) {
+        ctx.moveTo(ent.start.x, ent.start.y);
+        ctx.lineTo(ent.end.x, ent.end.y);
         ctx.stroke();
       } 
       else if (ent.type === EntityType.LWPOLYLINE && ent.vertices && ent.vertices.length > 0) {
-        ctx.moveTo(toScreenX(ent.vertices[0].x), toScreenY(ent.vertices[0].y));
+        ctx.moveTo(ent.vertices[0].x, ent.vertices[0].y);
         for (let i = 1; i < ent.vertices.length; i++) {
-          ctx.lineTo(toScreenX(ent.vertices[i].x), toScreenY(ent.vertices[i].y));
+          ctx.lineTo(ent.vertices[i].x, ent.vertices[i].y);
         }
         if (ent.closed) ctx.closePath();
         ctx.stroke();
       }
       else if (ent.type === EntityType.CIRCLE && ent.center && ent.radius) {
-        const cx = toScreenX(ent.center.x);
-        const cy = toScreenY(ent.center.y);
-        const r = ent.radius * transform.k;
-        ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+        ctx.arc(ent.center.x, ent.center.y, ent.radius, 0, 2 * Math.PI);
         ctx.stroke();
       }
       else if (ent.type === EntityType.ARC && ent.center && ent.radius && ent.startAngle !== undefined && ent.endAngle !== undefined) {
-        const cx = toScreenX(ent.center.x);
-        const cy = toScreenY(ent.center.y);
-        const r = ent.radius * transform.k;
-        // DXF Angles are CCW from X-axis. Canvas Arc is CW? No, standard arc is CCW.
-        // But our Y axis is inverted (Screen Y vs World Y). 
-        // World 0 deg = Right. World 90 deg = Up.
-        // Screen 0 deg = Right. Screen 90 deg = Down.
-        // So World Angle theta becomes Screen Angle -theta.
-        const startRad = -(ent.startAngle * Math.PI / 180);
-        const endRad = -(ent.endAngle * Math.PI / 180);
-        
-        ctx.arc(cx, cy, r, startRad, endRad, true); // true = CounterClockwise in Canvas? 
-        // Actually, since we flipped the sign, we need to check arc direction.
-        // Dxf arc goes from start to end CCW.
-        // -Start to -End is CW visually?
-        // Let's rely on standard 'true' (counterclockwise) for our inverted angles.
+        // DXF angles are in degrees CCW. Canvas arc takes radians.
+        const startRad = ent.startAngle * Math.PI / 180;
+        const endRad = ent.endAngle * Math.PI / 180;
+        ctx.arc(ent.center.x, ent.center.y, ent.radius, startRad, endRad);
         ctx.stroke();
       }
       else if (ent.type === EntityType.TEXT && ent.start && ent.text) {
-          const x = toScreenX(ent.start.x);
-          const y = toScreenY(ent.start.y);
-          const height = Math.max(10, (ent.radius || 10) * transform.k);
-          
           ctx.save();
-          ctx.translate(x, y);
+          ctx.translate(ent.start.x, ent.start.y);
           
-          // Rotation handling
-          // DXF rotation is in degrees CCW.
-          // Because Y is flipped in our screen projection, we flip the rotation direction.
-          const rotationRad = (ent.startAngle || 0) * (Math.PI / 180);
-          ctx.rotate(-rotationRad);
-
+          // Fix for upside-down text:
+          // 1. Un-flip the Y axis locally (because global context is Y-flipped)
+          ctx.scale(1, -1);
+          // 2. Rotate. Since Y is now 'down' (visual), but DXF angle is CCW,
+          //    and canvas rotate is CW, we invert the angle.
+          ctx.rotate(-(ent.startAngle || 0) * Math.PI / 180);
+          
+          const height = ent.radius || 10; 
           ctx.font = `${height}px monospace`;
-          // DXF Text alignment varies, defaulting to left baseline for now
-          ctx.fillText(ent.text, 0, 0);
+          ctx.fillText(ent.text, 0, 0); // Default baseline left
           ctx.restore();
       }
       else if (ent.type === EntityType.DIMENSION) {
+        // Draw measurement line
+        if (ent.measureStart && ent.measureEnd) {
+           ctx.moveTo(ent.measureStart.x, ent.measureStart.y);
+           ctx.lineTo(ent.measureEnd.x, ent.measureEnd.y);
+           ctx.stroke();
+        }
+        // Draw text
         if (ent.end && ent.text) {
-          ctx.save();
-          ctx.translate(toScreenX(ent.end.x), toScreenY(ent.end.y));
-          
-          // Try to respect rotation if present (Dimensions often align with element)
-          // For now, draw horizontal
-          ctx.font = `12px monospace`;
-          ctx.fillText(ent.text, 0, 0);
-          ctx.restore();
-        } else if (ent.end) {
-          ctx.save();
-          ctx.translate(toScreenX(ent.end.x), toScreenY(ent.end.y));
-          ctx.font = `10px monospace`;
-          ctx.fillText("DIM", 0, 0);
-          ctx.restore();
+           ctx.save();
+           ctx.translate(ent.end.x, ent.end.y);
+           ctx.scale(1, -1); // Fix upside down text
+           // Dimensions usually align with line, but for now draw horizontal or use default
+           const height = 2.5;
+           ctx.font = `${height}px monospace`;
+           ctx.fillText(ent.text, 0, 0);
+           ctx.restore();
         }
       }
-      else if (ent.type === EntityType.INSERT && ent.start) {
-          const x = toScreenX(ent.start.x);
-          const y = toScreenY(ent.start.y);
-          const size = 6;
-          
+      else if (ent.type === EntityType.INSERT && ent.start && ent.blockName && data.blocks[ent.blockName]) {
+          const blockEntities = data.blocks[ent.blockName];
           ctx.save();
-          ctx.strokeStyle = color;
-          ctx.globalAlpha = 0.5;
-          ctx.beginPath();
-          ctx.moveTo(x - size, y - size);
-          ctx.lineTo(x + size, y + size);
-          ctx.moveTo(x + size, y - size);
-          ctx.lineTo(x - size, y + size);
-          ctx.stroke();
+          ctx.translate(ent.start.x, ent.start.y);
+          if (ent.rotation) ctx.rotate(ent.rotation * Math.PI / 180);
+          if (ent.scale) ctx.scale(ent.scale.x, ent.scale.y);
+          
+          blockEntities.forEach(subEnt => drawEntity(subEnt, effectiveLayer));
+          
           ctx.restore();
       }
-    });
+    };
+
+    ctx.save();
+    
+    // Global transform: Move, Zoom, and Flip Y axis (DXF Y is up)
+    ctx.translate(transform.x, rect.height - transform.y);
+    ctx.scale(transform.k, -transform.k); 
+    
+    data.entities.forEach(ent => drawEntity(ent, ent.layer));
+    
+    ctx.restore();
 
   }, [data, activeLayers, transform, layerColors]);
 

@@ -15,19 +15,22 @@ const decodeDxfString = (str: string): string => {
 
 /**
  * A streamlined DXF parser.
- * Supports TABLES for layer names.
- * Supports ENTITIES: LINE, LWPOLYLINE, POLYLINE/VERTEX, CIRCLE, ARC, TEXT, MTEXT, DIMENSION, INSERT.
+ * Supports TABLES (Layers), BLOCKS (Definitions), and ENTITIES (Geometry).
  */
 export const parseDxf = (dxfContent: string): DxfData => {
   const lines = dxfContent.split(/\r\n|\r|\n/);
   const entities: DxfEntity[] = [];
+  const blocks: Record<string, DxfEntity[]> = {};
   const layers = new Set<string>();
 
-  let section = 'NONE'; // NONE | TABLES | ENTITIES
+  let section = 'NONE'; // NONE | TABLES | BLOCKS | ENTITIES
   let tableType = 'NONE'; // Inside TABLES: LAYER, etc.
   
+  // For Block Parsing
+  let activeBlockName: string | null = null;
+  
+  // For Entity Parsing
   let currentEntity: Partial<DxfEntity> | null = null;
-  // Track if we are inside a POLYLINE sequence
   let inPolyline = false;
   
   let i = 0;
@@ -37,7 +40,7 @@ export const parseDxf = (dxfContent: string): DxfData => {
     const value = lines[i + 1]?.trim();
     i += 2;
 
-    if (!codeStr || !value) continue;
+    if (!codeStr || value === undefined) continue;
     const code = parseInt(codeStr, 10);
     if (isNaN(code)) continue;
 
@@ -78,72 +81,66 @@ export const parseDxf = (dxfContent: string): DxfData => {
       }
     }
 
+    // --- BLOCKS SECTION ---
+    if (section === 'BLOCKS') {
+       if (code === 0) {
+          if (value === 'BLOCK') {
+             // Start of a block definition
+             activeBlockName = null; // Will be set by code 2
+          } else if (value === 'ENDBLK') {
+             // End of block
+             if (currentEntity && activeBlockName && blocks[activeBlockName]) {
+                 // Push the last entity inside the block
+                 finalizeEntity(currentEntity, blocks[activeBlockName], layers);
+                 currentEntity = null;
+             }
+             activeBlockName = null;
+          } else {
+             // Entity inside a block
+             if (activeBlockName) {
+                 handleEntityStart(value, 
+                   (ent) => {
+                       if (!blocks[activeBlockName!]) blocks[activeBlockName!] = [];
+                       finalizeEntity(ent, blocks[activeBlockName!], layers);
+                   }, 
+                   () => currentEntity, 
+                   (e) => currentEntity = e,
+                   () => inPolyline,
+                   (b) => inPolyline = b
+                 );
+             }
+          }
+       } else if (activeBlockName) {
+           // Properties of entity inside block
+           if (currentEntity) {
+               if (inPolyline && currentEntity._originalType === 'POLYLINE') {
+                   parsePolylineProperty(code, value, currentEntity);
+               } else {
+                   parseProperty(code, value, currentEntity);
+               }
+           }
+       } else {
+           // Properties of the BLOCK definition itself (we just need the name)
+           if (code === 2) {
+               activeBlockName = value;
+               blocks[activeBlockName] = [];
+           }
+       }
+    }
+
     // --- ENTITIES SECTION ---
     if (section === 'ENTITIES') {
       if (code === 0) {
-        // New Entity Start
-        const typeStr = value;
-        
-        // Finalize previous entity if it's not a POLYLINE being built
-        if (currentEntity && !inPolyline) {
-          finalizeEntity(currentEntity, entities, layers);
-          currentEntity = null;
-        }
-
-        // Special handling for POLYLINE sequence
-        if (typeStr === 'POLYLINE') {
-           inPolyline = true;
-           // Initialize the container, treating it like an LWPOLYLINE for rendering simplicity
-           currentEntity = {
-             type: EntityType.LWPOLYLINE,
-             layer: '0',
-             vertices: [],
-             _originalType: 'POLYLINE'
-           };
-        } else if (typeStr === 'VERTEX') {
-           if (inPolyline && currentEntity) {
-             // We are inside a polyline, this is a vertex.
-             // We don't create a new entity, we just prepare to parse properties into a temporary point
-             // But simpler approach: just parse x/y/z codes right here? 
-             // DXF structure: 0 VERTEX -> properties... -> 0 VERTEX
-             // So when we hit 0 VERTEX, we are technically starting a new entity object in DXF terms.
-             // BUT for our simplified parser, we treat VERTEX as just adding data to the parent POLYLINE.
-             
-             // Check if we have a pending point from previous VERTEX?
-             // No, let's just use a flag or modify how parseProperty works.
-             // Actually, standard parsing loop expects `currentEntity`. 
-             // Let's keep `currentEntity` pointing to the POLYLINE.
-             // And we will append a new vertex object to it.
-           }
-        } else if (typeStr === 'SEQEND') {
-           if (inPolyline && currentEntity) {
-             finalizeEntity(currentEntity, entities, layers);
-             currentEntity = null;
-             inPolyline = false;
-           }
-        } else {
-           // Normal Entity
-           if (inPolyline) {
-             // If we hit a non-VERTEX/SEQEND while in polyline (shouldn't happen in valid DXF), abort polyline
-             if (currentEntity) finalizeEntity(currentEntity, entities, layers);
-             inPolyline = false;
-           }
-           
-           currentEntity = {
-             type: mapType(typeStr),
-             layer: '0',
-             vertices: [],
-             _originalType: typeStr
-           };
-        }
+        handleEntityStart(value, 
+            (ent) => finalizeEntity(ent, entities, layers),
+            () => currentEntity, 
+            (e) => currentEntity = e,
+            () => inPolyline,
+            (b) => inPolyline = b
+        );
       } else if (currentEntity) {
         // Parse Properties
         if (inPolyline && currentEntity._originalType === 'POLYLINE') {
-            // We are parsing properties for POLYLINE or its VERTEX
-            // This is tricky in a linear loop. 
-            // Simplified: If code is 10/20, we assume it's a vertex coordinate
-            // Note: POLYLINE entity itself has 10/20/30 (usually 0), VERTEX has actual points.
-            // We will heuristically add points.
             parsePolylineProperty(code, value, currentEntity);
         } else {
             parseProperty(code, value, currentEntity);
@@ -152,15 +149,77 @@ export const parseDxf = (dxfContent: string): DxfData => {
     }
   }
 
-  // Push last entity
-  if (currentEntity) {
+  // Push last entity of ENTITIES section
+  if (currentEntity && section === 'ENTITIES') {
     finalizeEntity(currentEntity, entities, layers);
   }
 
   return {
     entities,
-    layers: Array.from(layers).sort()
+    layers: Array.from(layers).sort(),
+    blocks
   };
+};
+
+/**
+ * Centralized logic to start a new entity, reused for ENTITIES and BLOCKS sections.
+ */
+const handleEntityStart = (
+    typeStr: string,
+    onFinalize: (e: Partial<DxfEntity>) => void,
+    getCurrent: () => Partial<DxfEntity> | null,
+    setCurrent: (e: Partial<DxfEntity> | null) => void,
+    getInPolyline: () => boolean,
+    setInPolyline: (b: boolean) => void
+) => {
+    const current = getCurrent();
+    const inPoly = getInPolyline();
+
+    // Special handling for POLYLINE sequence
+    if (typeStr === 'POLYLINE') {
+        // If we were already in a polyline (nested? shouldn't happen), finalize it
+        if (current && !inPoly) {
+            onFinalize(current);
+        }
+        setInPolyline(true);
+        setCurrent({
+            type: EntityType.LWPOLYLINE,
+            layer: '0',
+            vertices: [],
+            _originalType: 'POLYLINE'
+        });
+        return;
+    } 
+    
+    if (typeStr === 'VERTEX') {
+        // Just continue adding properties to the parent POLYLINE
+        return;
+    }
+    
+    if (typeStr === 'SEQEND') {
+        if (inPoly && current) {
+            onFinalize(current);
+            setCurrent(null);
+            setInPolyline(false);
+        }
+        return;
+    }
+
+    // Normal Entity Start
+    if (inPoly) {
+        // Implicit end of polyline if we hit a non-vertex/seqend
+        if (current) onFinalize(current);
+        setInPolyline(false);
+    } else if (current) {
+        onFinalize(current);
+    }
+
+    setCurrent({
+        type: mapType(typeStr),
+        layer: '0',
+        vertices: [],
+        _originalType: typeStr
+    });
 };
 
 const mapType = (typeStr: string): EntityType => {
@@ -173,19 +232,12 @@ const mapType = (typeStr: string): EntityType => {
     case 'MTEXT': return EntityType.TEXT;
     case 'DIMENSION': return EntityType.DIMENSION;
     case 'INSERT': return EntityType.INSERT;
-    // POLYLINE handled manually
     default: return EntityType.UNKNOWN;
   }
 };
 
 const parsePolylineProperty = (code: number, value: string, entity: Partial<DxfEntity>) => {
-    // Handling VERTEX coordinates for POLYLINE
-    // We assume every 10 starts a new vertex or updates the last one
     const valNum = parseFloat(value);
-    
-    // We need to distinguish between POLYLINE header coords (which we ignore usually) and VERTEX coords.
-    // However, in this simple parser, we just collect all 10/20 pairs as vertices.
-    // This might catch the header 0,0, but that's usually fine or invisible.
     
     if (code === 8) { // Layer
         entity.layer = decodeDxfString(value);
@@ -218,7 +270,7 @@ const parseProperty = (code: number, value: string, entity: Partial<DxfEntity>) 
         entity.vertices?.push({ x: valNum, y: 0 });
       } else {
         entity.start.x = valNum;
-        entity.center.x = valNum; // reused for Circle/Arc center
+        entity.center.x = valNum; 
       }
       break;
     case 20: // Start Y / Center Y / Insertion Y
@@ -240,15 +292,42 @@ const parseProperty = (code: number, value: string, entity: Partial<DxfEntity>) 
       entity.end.y = valNum;
       break;
 
+    case 13: // Measure Start X (Dimension)
+      if (!entity.measureStart) entity.measureStart = { x: 0, y: 0 };
+      entity.measureStart.x = valNum;
+      break;
+    case 23: // Measure Start Y
+      if (!entity.measureStart) entity.measureStart = { x: 0, y: 0 };
+      entity.measureStart.y = valNum;
+      break;
+
+    case 14: // Measure End X (Dimension)
+      if (!entity.measureEnd) entity.measureEnd = { x: 0, y: 0 };
+      entity.measureEnd.x = valNum;
+      break;
+    case 24: // Measure End Y
+      if (!entity.measureEnd) entity.measureEnd = { x: 0, y: 0 };
+      entity.measureEnd.y = valNum;
+      break;
+
     case 40: // Radius or Text Height
       entity.radius = valNum;
       break;
     
-    case 50: // Angle
-      // MTEXT: Rotation in Radians
-      // TEXT: Rotation in Degrees
+    case 41: // Scale X (Insert)
+      if (!entity.scale) entity.scale = { x: 1, y: 1 };
+      entity.scale.x = valNum;
+      break;
+    case 42: // Scale Y (Insert)
+      if (!entity.scale) entity.scale = { x: 1, y: 1 };
+      entity.scale.y = valNum;
+      break;
+
+    case 50: // Angle / Rotation
       if (entity._originalType === 'MTEXT') {
           entity.startAngle = valNum * (180 / Math.PI);
+      } else if (entity.type === EntityType.INSERT) {
+          entity.rotation = valNum;
       } else {
           entity.startAngle = valNum; 
       }

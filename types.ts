@@ -27,8 +27,16 @@ export interface DxfEntity {
   vertices?: Point[];
   closed?: boolean;
   text?: string;
+  
+  // For Dimensions
+  measureStart?: Point; // Code 13, 23
+  measureEnd?: Point;   // Code 14, 24
+
   // For Insert/Block
   blockName?: string;
+  scale?: Point; // X=41, Y=42, Z=43
+  rotation?: number; // Code 50
+
   // For distinguishing MTEXT vs TEXT during parsing
   _originalType?: string; 
 }
@@ -36,6 +44,7 @@ export interface DxfEntity {
 export interface DxfData {
   entities: DxfEntity[];
   layers: string[];
+  blocks: Record<string, DxfEntity[]>;
 }
 
 export interface Bounds {
