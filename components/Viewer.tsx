@@ -35,6 +35,8 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
     };
 
     const processEntity = (ent: DxfEntity, offsetX = 0, offsetY = 0) => {
+       // Simple bounding box logic: 
+       // Note: This does not perfectly handle rotated/scaled blocks, but gives a rough idea.
        if (ent.type === EntityType.LINE && ent.start && ent.end) {
          checkPoint(ent.start.x + offsetX, ent.start.y + offsetY);
          checkPoint(ent.end.x + offsetX, ent.end.y + offsetY);
@@ -45,6 +47,9 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
          checkPoint(ent.center.x + offsetX + ent.radius, ent.center.y + offsetY + ent.radius);
        } else if ((ent.type === EntityType.TEXT || ent.type === EntityType.INSERT) && ent.start) {
          checkPoint(ent.start.x + offsetX, ent.start.y + offsetY);
+         // Recursively check blocks for bounds? 
+         // For performance, we might skip deep recursion or just use insertion point.
+         // Let's just use insertion point to avoid infinite loops or massive calc.
        } else if (ent.type === EntityType.DIMENSION) {
           if (ent.measureStart) checkPoint(ent.measureStart.x + offsetX, ent.measureStart.y + offsetY);
           if (ent.measureEnd) checkPoint(ent.measureEnd.x + offsetX, ent.measureEnd.y + offsetY);
@@ -159,12 +164,20 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
     ctx.fillStyle = '#0f172a';
     ctx.fillRect(0, 0, rect.width, rect.height);
     
+    // Setup View Transform
+    // ScreenX = worldX * k + x
+    // ScreenY = height - (worldY * k + y)
+    
+    // We can use context transform to simplify drawing commands
+    // But we need to handle the Y-flip.
+    // Let's use manual coordinate mapping for lines to be safe, 
+    // OR use scale(k, -k) and translate properly.
+    // Manual mapping is often easier to debug for mixed text/shapes.
+    
     const toScreenX = (x: number) => x * transform.k + transform.x;
     const toScreenY = (y: number) => rect.height - (y * transform.k + transform.y);
 
-    // Set consistent line width (~2px visual width)
-    const visualLineWidth = 2;
-    ctx.lineWidth = visualLineWidth / transform.k; 
+    ctx.lineWidth = 1; 
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
 
@@ -206,21 +219,21 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
       else if (ent.type === EntityType.TEXT && ent.start && ent.text) {
           ctx.save();
           ctx.translate(ent.start.x, ent.start.y);
+          // Text usually needs to stay consistent size on screen, but here we are in World Space context.
+          // If we use World Space context, text gets zoomed. That is correct for CAD.
+          const height = ent.radius || 10; // DXF text height is often in code 40 (mapped to radius in parser)
+          ctx.rotate((ent.startAngle || 0) * Math.PI / 180);
           
-          // Fix for upside-down text:
-          // 1. Un-flip the Y axis locally (because global context is Y-flipped)
-          ctx.scale(1, -1);
-          // 2. Rotate. Since Y is now 'down' (visual), but DXF angle is CCW,
-          //    and canvas rotate is CW, we invert the angle.
-          ctx.rotate(-(ent.startAngle || 0) * Math.PI / 180);
-          
-          const height = ent.radius || 10; 
+          // We need to invert the Y scale for text to look right because we will flip the context Y later?
+          // No, we are using a custom transform matrix logic below.
+          // Actually, text rendering is tricky with pure matrix transform if we want readable text.
+          // But for strict CAD accuracy, it should scale.
           ctx.font = `${height}px monospace`;
-          ctx.fillText(ent.text, 0, 0); // Default baseline left
+          ctx.fillText(ent.text, 0, 0);
           ctx.restore();
       }
       else if (ent.type === EntityType.DIMENSION) {
-        // Draw measurement line
+        // Draw measurement line if possible
         if (ent.measureStart && ent.measureEnd) {
            ctx.moveTo(ent.measureStart.x, ent.measureStart.y);
            ctx.lineTo(ent.measureEnd.x, ent.measureEnd.y);
@@ -230,9 +243,7 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
         if (ent.end && ent.text) {
            ctx.save();
            ctx.translate(ent.end.x, ent.end.y);
-           ctx.scale(1, -1); // Fix upside down text
-           // Dimensions usually align with line, but for now draw horizontal or use default
-           const height = 2.5;
+           const height = 2.5; // Default dim text height if unknown
            ctx.font = `${height}px monospace`;
            ctx.fillText(ent.text, 0, 0);
            ctx.restore();
@@ -251,11 +262,26 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
       }
     };
 
+    // Apply Global View Transform
+    // We want: ScreenY = H - (WorldY * k + y)
+    // Canvas standard: y goes down.
+    // To match DXF (y up), we can scale(1, -1) and translate(0, -H)?
+    // Or just use the transform state manually.
+    
+    // Let's use the matrix for everything to support recursion easily!
     ctx.save();
     
-    // Global transform: Move, Zoom, and Flip Y axis (DXF Y is up)
+    // 1. Move origin to bottom-left (visually)
+    // 2. Apply Pan
+    // 3. Apply Zoom
+    // 4. Flip Y
+    
+    // Transforms are applied in reverse order of code? No, usually forward.
+    // We want coord (x,y) -> (x*k + tx, H - (y*k + ty))
+    // = (x*k + tx, -y*k + (H - ty))
+    
     ctx.translate(transform.x, rect.height - transform.y);
-    ctx.scale(transform.k, -transform.k); 
+    ctx.scale(transform.k, -transform.k); // Flip Y axis to point UP
     
     data.entities.forEach(ent => drawEntity(ent, ent.layer));
     
