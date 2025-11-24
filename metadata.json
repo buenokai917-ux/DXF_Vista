@@ -1,0 +1,5 @@
+{
+  "name": "DXF Vista",
+  "description": "A high-performance DXF viewer that allows users to analyze layers, visualize CAD drawings in the browser, and export compositions as PDF or PNG.",
+  "requestFramePermissions": []
+}
