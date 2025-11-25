@@ -6,6 +6,7 @@ export enum EntityType {
   TEXT = 'TEXT',
   DIMENSION = 'DIMENSION',
   INSERT = 'INSERT',
+  ATTRIB = 'ATTRIB',
   UNKNOWN = 'UNKNOWN'
 }
 
@@ -36,6 +37,10 @@ export interface DxfEntity {
   blockName?: string;
   scale?: Point; // X=41, Y=42, Z=43
   rotation?: number; // Code 50
+  hasAttributes?: boolean; // Code 66
+
+  // For Attrib
+  invisible?: boolean; // Code 70 bit 1
 
   // For MTEXT direction
   xAxis?: Point; // Code 11, 21

@@ -195,6 +195,7 @@ const handleEntityStart = (
     const current = getCurrent();
     const inPoly = getInPolyline();
 
+    // Explicit POLYLINE sequence handling
     if (typeStr === 'POLYLINE') {
         if (current && !inPoly) onFinalize(current);
         setInPolyline(true);
@@ -202,18 +203,27 @@ const handleEntityStart = (
         return;
     } 
     
+    // VERTEX is child of POLYLINE
     if (typeStr === 'VERTEX') return;
     
+    // SEQEND terminates a sequence (POLYLINE or INSERT+ATTRIBs)
     if (typeStr === 'SEQEND') {
         if (inPoly && current) {
+            // End of Polyline sequence
             onFinalize(current);
             setCurrent(null);
             setInPolyline(false);
+        } else if (current) {
+            // End of Insert/Attrib sequence (INSERT and ATTRIBs are already added as flat entities)
+            onFinalize(current);
+            setCurrent(null);
         }
         return;
     }
 
+    // Normal entity start: Finalize previous
     if (inPoly) {
+        // We shouldn't normally get here if SEQEND exists, but just in case
         if (current) onFinalize(current);
         setInPolyline(false);
     } else if (current) {
@@ -233,6 +243,7 @@ const mapType = (typeStr: string): EntityType => {
     case 'MTEXT': return EntityType.TEXT;
     case 'DIMENSION': return EntityType.DIMENSION;
     case 'INSERT': return EntityType.INSERT;
+    case 'ATTRIB': return EntityType.ATTRIB;
     default: return EntityType.UNKNOWN;
   }
 };
@@ -330,13 +341,22 @@ const parseProperty = (code: number, value: string, entity: Partial<DxfEntity>, 
       } else if (entity.type === EntityType.INSERT) {
           entity.rotation = valNum;
       } else {
-          // TEXT angle is in degrees
+          // TEXT and ATTRIB angle is in degrees
           entity.startAngle = valNum; 
       }
       break;
       
     case 51: entity.endAngle = valNum; break;
-    case 70: if (entity.type === EntityType.LWPOLYLINE && (parseInt(value) & 1) === 1) entity.closed = true; break;
+    case 66:
+        if (entity.type === EntityType.INSERT) {
+            entity.hasAttributes = parseInt(value) === 1;
+        }
+        break;
+    case 70: 
+        const valInt = parseInt(value);
+        if (entity.type === EntityType.LWPOLYLINE && (valInt & 1) === 1) entity.closed = true; 
+        if (entity.type === EntityType.ATTRIB && (valInt & 1) === 1) entity.invisible = true;
+        break;
     case 1: entity.text = decodeDxfString(value, encoding); break;
     case 2: if (entity.type === EntityType.INSERT) entity.blockName = value; break;
   }

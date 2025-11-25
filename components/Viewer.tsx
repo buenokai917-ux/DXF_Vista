@@ -43,7 +43,7 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
        } else if ((ent.type === EntityType.CIRCLE || ent.type === EntityType.ARC) && ent.center && ent.radius) {
          checkPoint(ent.center.x + offsetX - ent.radius, ent.center.y + offsetY - ent.radius);
          checkPoint(ent.center.x + offsetX + ent.radius, ent.center.y + offsetY + ent.radius);
-       } else if ((ent.type === EntityType.TEXT || ent.type === EntityType.INSERT) && ent.start) {
+       } else if ((ent.type === EntityType.TEXT || ent.type === EntityType.INSERT || ent.type === EntityType.ATTRIB) && ent.start) {
          checkPoint(ent.start.x + offsetX, ent.start.y + offsetY);
        } else if (ent.type === EntityType.DIMENSION) {
           if (ent.measureStart) checkPoint(ent.measureStart.x + offsetX, ent.measureStart.y + offsetY);
@@ -168,6 +168,8 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
     ctx.lineJoin = 'round';
 
     const drawEntity = (ent: DxfEntity, contextLayer: string, accumulatedScale: number) => {
+       if (ent.type === EntityType.ATTRIB && ent.invisible) return;
+
        const effectiveLayer = ent.layer === '0' ? contextLayer : ent.layer;
        if (!activeLayers.has(effectiveLayer)) return;
        
@@ -175,11 +177,7 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
        ctx.strokeStyle = color;
        ctx.fillStyle = color;
 
-       // Dynamic line width logic: 
-       // We want 2px on screen.
-       // The current context is scaled by `transform.k * accumulatedScale`.
-       // So to get 2px, we divide 2 by that factor.
-       // Math.abs handles negative scales (mirroring).
+       // Dynamic line width
        ctx.lineWidth = 2 / (transform.k * Math.abs(accumulatedScale));
 
        ctx.beginPath();
@@ -207,7 +205,7 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
         ctx.arc(ent.center.x, ent.center.y, ent.radius, startRad, endRad);
         ctx.stroke();
       }
-      else if (ent.type === EntityType.TEXT && ent.start && ent.text) {
+      else if ((ent.type === EntityType.TEXT || ent.type === EntityType.ATTRIB) && ent.start && ent.text) {
           ctx.save();
           ctx.translate(ent.start.x, ent.start.y);
           
