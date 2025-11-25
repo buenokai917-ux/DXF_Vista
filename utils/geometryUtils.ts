@@ -237,7 +237,7 @@ export const findParallelPolygons = (
     tolerance = 600, 
     resultLayer = 'CALC_LAYER', 
     obstacles: DxfEntity[] = [],
-    axisLines: DxfEntity[] = []
+    axisLines: DxfEntity[] = [] 
 ): DxfEntity[] => {
   const polygons: DxfEntity[] = [];
   const used = new Set<number>(); 
@@ -287,79 +287,44 @@ export const findParallelPolygons = (
     }
 
     if (bestMatchIdx !== -1) {
-        
-        // --- AXIS VALIDATION START ---
-        // If axis lines are provided, ensure one exists "between" or relevant to this pair
-        let isValidPair = true;
-        if (axisLines.length > 0) {
-            isValidPair = false;
-            // Get the matched entity (we need the DxfEntity from the original list or the sorted object)
-            // sortedLines index vs used index: sortedLines[bestMatchIdx] is NOT index 'bestMatchIdx' of sorted array.
-            // Wait, bestMatchIdx in the inner loop IS the index of the sortedLines array.
-            const l2Match = sortedLines[bestMatchIdx].l;
+        const l2 = lines.find((_, idx) => idx === bestMatchIdx);
+        let isValid = true;
+
+        // Validation: Check for required AXIS line
+        if (axisLines.length > 0 && l2 && l2.start && l2.end) {
+            const pairCenter = {
+                x: (l1.start.x + l1.end.x + l2.start.x + l2.end.x) / 4,
+                y: (l1.start.y + l1.end.y + l2.start.y + l2.end.y) / 4
+            };
             
-            // Beam properties (direction unit vector)
-            const dx = l1.end!.x - l1.start!.x;
-            const dy = l1.end!.y - l1.start!.y;
-            const len = Math.sqrt(dx*dx + dy*dy);
-            const ux = dx/len;
-            const uy = dy/len;
-            
-            // Separation of beam lines
-            const separation = distancePointToLine(l2Match.start!, l1.start!, l1.end!);
+            const hasValidAxis = axisLines.some(axis => {
+                if (axis.type !== EntityType.LINE || !axis.start || !axis.end) return false;
+                
+                // 1. Distance check (Axis should be roughly inside the beam, so close to center)
+                const distToCenter = distancePointToLine(pairCenter, axis.start, axis.end);
+                if (distToCenter > 1000) return false; // Tolerance ~1m
 
-            for (const axis of axisLines) {
-                 if (!axis.start || !axis.end) continue;
+                // 2. Parallel check
+                const adx = axis.end.x - axis.start.x;
+                const ady = axis.end.y - axis.start.y;
+                const alen = Math.sqrt(adx*adx + ady*ady);
+                const l1len = Math.sqrt(v1.x*v1.x + v1.y*v1.y);
+                const dot = (v1.x * adx + v1.y * ady) / (l1len * alen);
+                
+                return Math.abs(dot) > 0.95;
+            });
 
-                 // 1. Check Parallelism
-                 const ax = axis.end.x - axis.start.x;
-                 const ay = axis.end.y - axis.start.y;
-                 const aLen = Math.sqrt(ax*ax + ay*ay);
-                 if (aLen < 100) continue; 
-
-                 const dotAxis = (ux * ax + uy * ay) / aLen;
-                 if (Math.abs(dotAxis) < 0.98) continue; // Must be strictly parallel (~11 deg)
-
-                 // 2. Check "Between-ness" (Lateral proximity)
-                 // If axis is between L1 and L2, the sum of distances from Axis to L1 and Axis to L2
-                 // should be roughly equal to separation distance. 
-                 const axisMid = { x: (axis.start.x + axis.end.x)/2, y: (axis.start.y + axis.end.y)/2 };
-                 const d1 = distancePointToLine(axisMid, l1.start!, l1.end!);
-                 const d2 = distancePointToLine(axisMid, l2Match.start!, l2Match.end!);
-                 
-                 // Allow tolerance for thickness and slight misalignment
-                 if (d1 + d2 > separation * 1.5 + 50) continue; // Too far laterally
-
-                 // 3. Check Longitudinal Overlap
-                 // Project Axis onto Beam L1 vector
-                 const tStart = (axis.start.x - l1.start!.x)*ux + (axis.start.y - l1.start!.y)*uy;
-                 const tEnd = (axis.end.x - l1.start!.x)*ux + (axis.end.y - l1.start!.y)*uy;
-                 const tMinA = Math.min(tStart, tEnd);
-                 const tMaxA = Math.max(tStart, tEnd);
-                 
-                 // Beam Interval (0 to len1) roughly
-                 // Intersection
-                 const interStart = Math.max(0, tMinA);
-                 const interEnd = Math.min(len1, tMaxA);
-                 
-                 if (interEnd - interStart > 100) {
-                     // Found a valid axis!
-                     isValidPair = true;
-                     break;
-                 }
+            if (!hasValidAxis) {
+                isValid = false;
             }
         }
-        // --- AXIS VALIDATION END ---
 
-        if (isValidPair) {
+        if (isValid && l2) {
             used.add(i);
-            used.add(sortedLines[bestMatchIdx].i); // Add original index
+            used.add(bestMatchIdx);
             
-            const l2 = sortedLines[bestMatchIdx].l;
-            if (l2) {
-                const poly = createPolygonFromPair(l1, l2, resultLayer, obstacles);
-                if (poly) polygons.push(poly);
-            }
+            const poly = createPolygonFromPair(l1, l2, resultLayer, obstacles);
+            if (poly) polygons.push(poly);
         }
     }
   }

@@ -193,7 +193,7 @@ const App: React.FC = () => {
 
     // 1. Process Parallel Lines (Filling mode)
     // Pass obstacles to allow beams to snap to walls/columns
-    // Pass axisEntities to validate beams
+    // Pass axisEntities to validate beams (must have axis parallel and inside)
     const generatedPolygons = findParallelPolygons(lines, 1200, resultLayer, obstacles, axisEntities);
     
     // 2. Process Existing Polylines
@@ -222,7 +222,7 @@ const App: React.FC = () => {
     });
 
     if (newEntities.length === 0) {
-        alert("No calculable beams found.");
+        alert("No calculable beams found. (Note: Valid beams require an AXIS line).");
         return;
     }
 
