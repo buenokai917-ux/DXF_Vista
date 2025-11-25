@@ -1,10 +1,11 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { jsPDF } from 'jspdf';
 import { parseDxf } from './utils/dxfParser';
-import { DxfData, LayerColors } from './types';
+import { DxfData, LayerColors, DxfEntity, EntityType } from './types';
+import { calculateLength, getCenter } from './utils/geometryUtils';
 import { Viewer } from './components/Viewer';
 import { Button } from './components/Button';
-import { Upload, Layers, Download, Image as ImageIcon, FileText, Settings, X, RefreshCw, Globe, Search } from 'lucide-react';
+import { Upload, Layers, Download, Image as ImageIcon, FileText, Settings, X, RefreshCw, Globe, Search, Calculator } from 'lucide-react';
 
 // Standard CAD Colors (Index 1-7 + Grays)
 const CAD_COLORS = [
@@ -112,6 +113,71 @@ const App: React.FC = () => {
     if (!layerSearchTerm) return data.layers;
     return data.layers.filter(l => l.toLowerCase().includes(layerSearchTerm.toLowerCase()));
   }, [data, layerSearchTerm]);
+
+  const calculateBeams = () => {
+    if (!data) return;
+
+    const targetLayers = ['BEAM', 'BEAM_CON'];
+    const resultLayer = 'BEAM_CALC';
+    const contextLayers = ['WALL', 'COLU', 'AXIS', 'Z主楼梁筋（横向）', 'Z主楼梁筋（纵向）'];
+
+    const newEntities: DxfEntity[] = [];
+    let count = 0;
+
+    data.entities.forEach(ent => {
+       if (targetLayers.includes(ent.layer)) {
+         const length = calculateLength(ent);
+         if (length > 0) {
+           const center = getCenter(ent);
+           if (center) {
+             // 1. Add Highlight Entity
+             newEntities.push({
+               ...ent,
+               layer: resultLayer
+             });
+
+             // 2. Add Text Label
+             newEntities.push({
+               type: EntityType.TEXT,
+               layer: resultLayer,
+               start: center,
+               text: `L=${Math.round(length)}`,
+               radius: 250, // Approximate text height, meaningful in CAD units
+               startAngle: 0
+             });
+             count++;
+           }
+         }
+       }
+    });
+
+    if (count === 0) {
+      alert("No entities found on BEAM or BEAM_CON layers.");
+      return;
+    }
+
+    // Update Data
+    const newData = {
+      ...data,
+      entities: [...data.entities, ...newEntities],
+      layers: data.layers.includes(resultLayer) ? data.layers : [resultLayer, ...data.layers]
+    };
+
+    setData(newData);
+
+    // Update Colors (Bright Green for Calc)
+    setLayerColors(prev => ({ ...prev, [resultLayer]: '#00FF00' }));
+
+    // Activate relevant layers
+    const newActive = new Set(activeLayers);
+    newActive.add(resultLayer);
+    contextLayers.forEach(l => {
+      if (data.layers.includes(l)) newActive.add(l);
+    });
+    setActiveLayers(newActive);
+    
+    alert(`Calculated lengths for ${count} beam segments. Added to layer: ${resultLayer}`);
+  };
 
   const exportPng = () => {
     if (!canvasRef.current || !file) return;
@@ -270,6 +336,19 @@ const App: React.FC = () => {
         </div>
 
         <div className="p-4 border-t border-slate-800 space-y-3">
+            <p className="text-xs text-slate-500 font-medium mb-2">ANALYSIS</p>
+            <Button 
+              onClick={calculateBeams} 
+              disabled={!data || isLoading} 
+              variant="primary" 
+              className="w-full justify-start text-sm bg-green-600 hover:bg-green-700 shadow-green-500/20"
+              icon={<Calculator size={16} />}
+            >
+              Calculate Beam Lengths
+            </Button>
+
+            <div className="h-px bg-slate-800 my-2"></div>
+            
             <p className="text-xs text-slate-500 font-medium mb-2">EXPORT</p>
             <Button 
               onClick={exportPdf} 
