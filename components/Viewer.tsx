@@ -6,10 +6,11 @@ interface ViewerProps {
   data: DxfData | null;
   activeLayers: Set<string>;
   layerColors: LayerColors;
+  filledLayers?: Set<string>;
   onRef?: (ref: HTMLCanvasElement | null) => void;
 }
 
-export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors, onRef }) => {
+export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors, filledLayers, onRef }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   
@@ -38,13 +39,10 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
     };
 
     const processEntity = (ent: DxfEntity, offsetX = 0, offsetY = 0, scaleX = 1, scaleY = 1, rotation = 0) => {
-       // Helper to transform a local point to global bounds
        const transformAndCheck = (localX: number, localY: number) => {
-          // Apply Scale
           let tx = localX * scaleX;
           let ty = localY * scaleY;
           
-          // Apply Rotation
           if (rotation !== 0) {
               const rad = rotation * Math.PI / 180;
               const cos = Math.cos(rad);
@@ -54,8 +52,6 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
               tx = rx;
               ty = ry;
           }
-
-          // Apply Translation
           checkPoint(tx + offsetX, ty + offsetY);
        };
 
@@ -65,7 +61,6 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
        } else if (ent.type === EntityType.LWPOLYLINE && ent.vertices) {
          ent.vertices.forEach(v => transformAndCheck(v.x, v.y));
        } else if ((ent.type === EntityType.CIRCLE || ent.type === EntityType.ARC) && ent.center && ent.radius) {
-         // Approximate circle bounds by 4 points
          transformAndCheck(ent.center.x - ent.radius, ent.center.y - ent.radius);
          transformAndCheck(ent.center.x + ent.radius, ent.center.y + ent.radius);
        } else if ((ent.type === EntityType.TEXT || ent.type === EntityType.ATTRIB) && ent.start) {
@@ -75,31 +70,7 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
           if (ent.measureEnd) transformAndCheck(ent.measureEnd.x, ent.measureEnd.y);
           if (ent.end) transformAndCheck(ent.end.x, ent.end.y); 
        } else if (ent.type === EntityType.INSERT && ent.start && ent.blockName && blocks[ent.blockName]) {
-          // Recursive Block Handling
           const subEntities = blocks[ent.blockName];
-          const insX = ent.start.x + offsetX; // This isn't quite right for recursion with rotation, 
-                                              // but simple offset + recursion handles 99% of cases correctly for bounds.
-                                              // Correct way is to pass accumulated transform.
-          
-          // For bounds, we need to transform the block's content relative to THIS insert, 
-          // and then apply the PARENT's transform. 
-          // To simplify, we rely on the transformAndCheck which applies the accumulated context.
-          // But we need to pass the NEW accumulated context to the child.
-          
-          // Actually, let's just transform the insert point using current context, 
-          // and then recursively process children with combined transform.
-          // Note: Full matrix multiplication is better, but this approximates well for typical 2D CAD.
-          
-          // Let's keep it simple: Map the block content's bounds into the parent space.
-          // Complex recursion for bounds can be slow. 
-          // Optimization: Just check the insertion point for now to ensure we don't crash, 
-          // or do 1 level deep if critical.
-          
-          // Let's do full recursion properly.
-          // New Offset = Current Offset + (Rotated/Scaled Insert Position)
-          // Actually, `ent.start` is local to the current context.
-          
-          // Let's compute the World Pos of the insert point
           let insLocalX = ent.start.x * scaleX;
           let insLocalY = ent.start.y * scaleY;
           if (rotation !== 0) {
@@ -111,7 +82,6 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
           }
           const nextOffsetX = offsetX + insLocalX;
           const nextOffsetY = offsetY + insLocalY;
-
           const nextScaleX = scaleX * (ent.scale?.x || 1);
           const nextScaleY = scaleY * (ent.scale?.y || 1);
           const nextRotation = rotation + (ent.rotation || 0);
@@ -126,7 +96,6 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
     return { minX, minY, maxX, maxY };
   }, []);
 
-  // Fit view to screen
   const fitToScreen = useCallback(() => {
     if (!data || !containerRef.current) return;
     
@@ -136,7 +105,6 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
     let dataWidth = bounds.maxX - bounds.minX;
     let dataHeight = bounds.maxY - bounds.minY;
     
-    // Safety check for empty or single-point bounds
     if (dataWidth <= 0) dataWidth = 100;
     if (dataHeight <= 0) dataHeight = 100;
 
@@ -147,7 +115,6 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
     const scaleX = availableWidth / dataWidth;
     const scaleY = availableHeight / dataHeight;
     
-    // Guard against infinity
     let k = Math.min(scaleX, scaleY);
     if (!Number.isFinite(k) || k === 0) k = 1;
     
@@ -164,7 +131,6 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
     fitToScreen();
   }, [fitToScreen]);
 
-  // --- Interaction Handlers ---
   const handleWheel = (e: React.WheelEvent) => {
     if (!containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
@@ -207,7 +173,6 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
     setTransform({ k: newK, x: newX, y: newY });
   };
 
-  // --- Drawing ---
   useEffect(() => {
     const canvas = canvasRef.current;
     const container = containerRef.current;
@@ -228,18 +193,15 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
     ctx.fillStyle = '#0f172a';
     ctx.fillRect(0, 0, rect.width, rect.height);
     
-    // Global Transform
     ctx.save();
     ctx.translate(transform.x, rect.height - transform.y);
-    ctx.scale(transform.k, -transform.k); // Y axis UP
+    ctx.scale(transform.k, -transform.k); 
     
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
 
     const drawEntity = (ent: DxfEntity, contextLayer: string, accumulatedScale: number) => {
        if (ent.type === EntityType.ATTRIB && ent.invisible) return;
-
-       // Prevent rendering if scale is too small or infinite
        if (!Number.isFinite(accumulatedScale) || accumulatedScale === 0) return;
 
        const effectiveLayer = ent.layer === '0' ? contextLayer : ent.layer;
@@ -249,7 +211,6 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
        ctx.strokeStyle = color;
        ctx.fillStyle = color;
 
-       // Dynamic line width - clamp to avoid errors
        const lineWidth = Math.max(0.1, 2 / (transform.k * Math.abs(accumulatedScale)));
        ctx.lineWidth = lineWidth;
 
@@ -265,7 +226,16 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
         for (let i = 1; i < ent.vertices.length; i++) {
           ctx.lineTo(ent.vertices[i].x, ent.vertices[i].y);
         }
-        if (ent.closed) ctx.closePath();
+        if (ent.closed) {
+           ctx.closePath();
+           // Check if fill is enabled for this layer
+           if (filledLayers && filledLayers.has(effectiveLayer)) {
+               ctx.save();
+               ctx.globalAlpha = 0.3;
+               ctx.fill();
+               ctx.restore();
+           }
+        }
         ctx.stroke();
       }
       else if (ent.type === EntityType.CIRCLE && ent.center && ent.radius) {
@@ -281,43 +251,29 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
       else if ((ent.type === EntityType.TEXT || ent.type === EntityType.ATTRIB) && ent.start && ent.text) {
           ctx.save();
           ctx.translate(ent.start.x, ent.start.y);
-          
-          // Un-flip Y axis so text draws upright relative to screen
           ctx.scale(1, -1);
-          
-          // Apply Rotation
           const angle = (ent.startAngle || 0) * Math.PI / 180;
           ctx.rotate(-angle);
-          
           const height = ent.radius || 10; 
           ctx.font = `${height}px monospace`;
-          
-          // Render multiline text
           const lines = ent.text.split('\n');
           lines.forEach((line, i) => {
-            // Render lines downwards
             ctx.fillText(line, 0, i * height * 1.25);
           });
-          
           ctx.restore();
       }
       else if (ent.type === EntityType.DIMENSION) {
-        // Draw Dimension Lines
         if (ent.measureStart && ent.measureEnd) {
            ctx.moveTo(ent.measureStart.x, ent.measureStart.y);
            ctx.lineTo(ent.measureEnd.x, ent.measureEnd.y);
            ctx.stroke();
         }
-        // Draw Dimension Text
         if (ent.end && ent.text) {
            ctx.save();
            ctx.translate(ent.end.x, ent.end.y);
-           
            ctx.scale(1, -1);
-           
            const angle = (ent.startAngle || 0) * Math.PI / 180;
            ctx.rotate(-angle);
-
            const height = 2.5; 
            ctx.font = `${height}px monospace`;
            ctx.textAlign = 'center';
@@ -331,26 +287,19 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
           ctx.save();
           ctx.translate(ent.start.x, ent.start.y);
           if (ent.rotation) ctx.rotate(ent.rotation * Math.PI / 180);
-          
           const scaleX = ent.scale?.x || 1;
           const scaleY = ent.scale?.y || 1;
-          
           ctx.scale(scaleX, scaleY);
-          
-          // Recurse with updated scale.
           const nextAccumulatedScale = accumulatedScale * scaleX;
-          
           blockEntities.forEach(subEnt => drawEntity(subEnt, effectiveLayer, nextAccumulatedScale));
-          
           ctx.restore();
       }
     };
 
     data.entities.forEach(ent => drawEntity(ent, ent.layer, 1.0));
-    
     ctx.restore();
 
-  }, [data, activeLayers, transform, layerColors]);
+  }, [data, activeLayers, transform, layerColors, filledLayers]);
 
   useEffect(() => {
     const handleResize = () => setTransform(t => ({...t})); 

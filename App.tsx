@@ -2,10 +2,10 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { jsPDF } from 'jspdf';
 import { parseDxf } from './utils/dxfParser';
 import { DxfData, LayerColors, DxfEntity, EntityType, Point } from './types';
-import { getBeamProperties, getCenter, transformPoint } from './utils/geometryUtils';
+import { getBeamProperties, getCenter, transformPoint, findParallelPolygons, calculateLength } from './utils/geometryUtils';
 import { Viewer } from './components/Viewer';
 import { Button } from './components/Button';
-import { Upload, Layers, Download, Image as ImageIcon, FileText, Settings, X, RefreshCw, Globe, Search, Calculator } from 'lucide-react';
+import { Upload, Layers, Download, Image as ImageIcon, FileText, Settings, X, RefreshCw, Globe, Search, Calculator, Boxes } from 'lucide-react';
 
 // Standard CAD Colors (Index 1-7 + Grays)
 const CAD_COLORS = [
@@ -33,6 +33,7 @@ const App: React.FC = () => {
   const [encoding, setEncoding] = useState<string>('utf-8');
   const [data, setData] = useState<DxfData | null>(null);
   const [activeLayers, setActiveLayers] = useState<Set<string>>(new Set());
+  const [filledLayers, setFilledLayers] = useState<Set<string>>(new Set());
   const [layerColors, setLayerColors] = useState<LayerColors>({});
   const [layerSearchTerm, setLayerSearchTerm] = useState('');
   const [isSidebarOpen, setSidebarOpen] = useState(true);
@@ -62,12 +63,11 @@ const App: React.FC = () => {
     reader.onload = (e) => {
       const content = e.target?.result as string;
       try {
-        // Pass the user-selected encoding to the parser
         const parsed = parseDxf(content, encoding);
         setData(parsed);
         setActiveLayers(new Set(parsed.layers));
+        setFilledLayers(new Set());
         
-        // Generate consistent colors for layers
         const colors: LayerColors = {};
         parsed.layers.forEach((layer, index) => {
            let hash = 0;
@@ -120,6 +120,56 @@ const App: React.FC = () => {
     return data.layers.filter(l => l.toLowerCase().includes(layerSearchTerm.toLowerCase()));
   }, [data, layerSearchTerm]);
 
+  // Recursively extract entities from layers, transforming block coordinates to world space
+  const extractEntities = (targetLayers: string[], rootEntities: DxfEntity[], blocks: Record<string, DxfEntity[]>): DxfEntity[] => {
+      const extracted: DxfEntity[] = [];
+      
+      const recurse = (entities: DxfEntity[], transform: Transform) => {
+          entities.forEach(ent => {
+             // 1. Recursion into Blocks
+             if (ent.type === EntityType.INSERT && ent.blockName && blocks[ent.blockName]) {
+                 const tScale = { 
+                    x: transform.scale.x * (ent.scale?.x || 1), 
+                    y: transform.scale.y * (ent.scale?.y || 1) 
+                 };
+                 const tRotation = transform.rotation + (ent.rotation || 0);
+                 const tPos = transformPoint(ent.start || {x:0, y:0}, transform.scale, transform.rotation, transform.translation);
+                 
+                 recurse(blocks[ent.blockName], {
+                    scale: tScale,
+                    rotation: tRotation,
+                    translation: tPos
+                 });
+                 return;
+             }
+
+             // 2. Collection of Target Entities
+             if (targetLayers.includes(ent.layer)) {
+                 // Clone and transform geometry to world space
+                 const worldEnt = { ...ent };
+                 
+                 // Apply transform to common geometry points
+                 if (worldEnt.start) worldEnt.start = transformPoint(worldEnt.start, transform.scale, transform.rotation, transform.translation);
+                 if (worldEnt.end) worldEnt.end = transformPoint(worldEnt.end, transform.scale, transform.rotation, transform.translation);
+                 if (worldEnt.center) worldEnt.center = transformPoint(worldEnt.center, transform.scale, transform.rotation, transform.translation);
+                 
+                 if (worldEnt.vertices) {
+                     worldEnt.vertices = worldEnt.vertices.map(v => transformPoint(v, transform.scale, transform.rotation, transform.translation));
+                 }
+                 
+                 // Approximate angle rotation for text/rectangles
+                 if (worldEnt.startAngle !== undefined) worldEnt.startAngle += transform.rotation;
+                 if (worldEnt.endAngle !== undefined) worldEnt.endAngle += transform.rotation;
+
+                 extracted.push(worldEnt);
+             }
+          });
+      };
+
+      recurse(rootEntities, { scale: {x:1, y:1}, rotation: 0, translation: {x:0, y:0} });
+      return extracted;
+  };
+
   const calculateBeams = () => {
     if (!data) return;
 
@@ -127,108 +177,114 @@ const App: React.FC = () => {
     const resultLayer = 'BEAM_CALC';
     const contextLayers = ['WALL', 'COLU', 'AXIS', 'Z主楼梁筋（横向）', 'Z主楼梁筋（纵向）'];
 
+    const entities = extractEntities(targetLayers, data.entities, data.blocks);
     const newEntities: DxfEntity[] = [];
-    let count = 0;
 
-    // Recursive function to process entities, including those inside Blocks
-    const processEntities = (entities: DxfEntity[], transform: Transform) => {
-       entities.forEach(ent => {
-          // If Block (INSERT), recurse
-          if (ent.type === EntityType.INSERT && ent.blockName && data.blocks[ent.blockName]) {
-             // Calculate new transform
-             const block = data.blocks[ent.blockName];
-             const tScale = { 
-               x: transform.scale.x * (ent.scale?.x || 1), 
-               y: transform.scale.y * (ent.scale?.y || 1) 
-             };
-             const tRotation = transform.rotation + (ent.rotation || 0);
-             // Position of the insert in CURRENT transform space
-             const tPos = transformPoint(ent.start || {x:0, y:0}, transform.scale, transform.rotation, transform.translation);
-             
-             processEntities(block, {
-               scale: tScale,
-               rotation: tRotation,
-               translation: tPos
-             });
-             return;
-          }
+    // Separate Lines and Polylines
+    const lines = entities.filter(e => e.type === EntityType.LINE);
+    const polylines = entities.filter(e => e.type === EntityType.LWPOLYLINE && e.closed);
 
-          // If Target Layer (BEAM)
-          if (targetLayers.includes(ent.layer)) {
-             const props = getBeamProperties(ent);
-             if (props.length > 0) {
-                 // Clone geometry to World Space for visualization
-                 const center = getCenter(ent);
-                 if (center) {
-                    const worldCenter = transformPoint(center, transform.scale, transform.rotation, transform.translation);
-                    const worldAngle = props.angle + transform.rotation; // Approximate angle
+    // 1. Process Parallel Lines (Filling mode)
+    // Beams are wider than walls, so allow tolerance up to 1200mm
+    const generatedPolygons = findParallelPolygons(lines, 1200, resultLayer);
+    
+    // 2. Process Existing Polylines
+    const existingPolygons = polylines.map(p => ({ ...p, layer: resultLayer }));
 
-                    // 1. Add Text Label at World Center
-                    newEntities.push({
-                        type: EntityType.TEXT,
-                        layer: resultLayer,
-                        start: worldCenter,
-                        text: `L=${Math.round(props.length)}`, // Length matches geometry regardless of scale (usually 1:1 in beam plans)
-                        radius: 250, // Fixed size text
-                        startAngle: worldAngle % 180 === 0 ? 0 : worldAngle // Keep text readable
-                    });
+    const allBeams = [...generatedPolygons, ...existingPolygons];
 
-                    // 2. Add Highlight Geometry (Transformed)
-                    if (ent.type === EntityType.LWPOLYLINE && ent.vertices) {
-                        const worldVertices = ent.vertices.map(v => 
-                            transformPoint(v, transform.scale, transform.rotation, transform.translation)
-                        );
-                        newEntities.push({
-                            type: EntityType.LWPOLYLINE,
-                            layer: resultLayer,
-                            vertices: worldVertices,
-                            closed: ent.closed
-                        });
-                    } else if (ent.type === EntityType.LINE && ent.start && ent.end) {
-                         newEntities.push({
-                            type: EntityType.LINE,
-                            layer: resultLayer,
-                            start: transformPoint(ent.start, transform.scale, transform.rotation, transform.translation),
-                            end: transformPoint(ent.end, transform.scale, transform.rotation, transform.translation),
-                        });
-                    }
+    allBeams.forEach(ent => {
+        const props = getBeamProperties(ent);
+        // Only consider beams of significant length (> 500mm)
+        if (props.length > 500) {
+            newEntities.push(ent); // The geometry itself (filled)
 
-                    count++;
-                 }
-             }
-          }
-       });
-    };
+            const center = getCenter(ent);
+            if (center) {
+                newEntities.push({
+                    type: EntityType.TEXT,
+                    layer: resultLayer,
+                    start: center,
+                    text: `L=${Math.round(props.length)}`,
+                    radius: 250,
+                    startAngle: props.angle % 180 === 0 ? 0 : props.angle
+                });
+            }
+        }
+    });
 
-    // Start processing from top-level entities
-    processEntities(data.entities, { scale: {x:1, y:1}, rotation: 0, translation: {x:0, y:0} });
-
-    if (count === 0) {
-      alert("No entities found on BEAM or BEAM_CON layers (checked blocks recursively).");
-      return;
+    if (newEntities.length === 0) {
+        alert("No calculable beams found.");
+        return;
     }
 
-    // Update Data
-    const newData = {
-      ...data,
-      entities: [...data.entities, ...newEntities],
-      layers: data.layers.includes(resultLayer) ? data.layers : [resultLayer, ...data.layers]
-    };
+    // Enable filling
+    const newFilled = new Set(filledLayers);
+    newFilled.add(resultLayer);
+    setFilledLayers(newFilled);
 
-    setData(newData);
+    updateDataWithCalculation(resultLayer, newEntities, '#00FF00', contextLayers);
+    alert(`Calculated ${allBeams.length} beam segments.`);
+  };
 
-    // Update Colors (Bright Green for Calc)
-    setLayerColors(prev => ({ ...prev, [resultLayer]: '#00FF00' }));
+  const calculateWalls = () => {
+    if (!data) return;
+    const targetLayer = 'WALL';
+    const resultLayer = 'WALL_CALC';
+    const contextLayers = ['AXIS', 'COLU', 'BEAM_CALC'];
 
-    // Activate relevant layers
-    const newActive = new Set(activeLayers);
-    newActive.add(resultLayer);
-    contextLayers.forEach(l => {
-      if (data.layers.includes(l)) newActive.add(l);
-    });
-    setActiveLayers(newActive);
+    const rawWallEntities = extractEntities([targetLayer], data.entities, data.blocks);
     
-    alert(`Calculated lengths for ${count} beam segments (including blocks). Added to layer: ${resultLayer}`);
+    // Use parallel finder for walls (Tolerance ~600mm)
+    const walls = findParallelPolygons(rawWallEntities, 600, resultLayer);
+    
+    const newEntities: DxfEntity[] = [];
+    walls.forEach(w => {
+        newEntities.push(w);
+
+        const props = getBeamProperties(w);
+        const center = getCenter(w);
+        if (center) {
+            newEntities.push({
+                type: EntityType.TEXT,
+                layer: resultLayer,
+                start: center,
+                text: `L=${Math.round(props.length)}`,
+                radius: 250,
+                startAngle: props.angle % 180 === 0 ? 0 : props.angle
+            });
+        }
+    });
+
+    if (newEntities.length === 0) {
+        alert("No parallel wall lines found to calculate.");
+        return;
+    }
+
+    const newFilled = new Set(filledLayers);
+    newFilled.add(resultLayer);
+    setFilledLayers(newFilled);
+
+    updateDataWithCalculation(resultLayer, newEntities, '#64748b', contextLayers); 
+    alert(`Calculated ${walls.length} wall segments.`);
+  };
+
+  const updateDataWithCalculation = (resultLayer: string, newEntities: DxfEntity[], color: string, contextLayers: string[]) => {
+      if (!data) return;
+      const newData = {
+          ...data,
+          entities: [...data.entities, ...newEntities],
+          layers: data.layers.includes(resultLayer) ? data.layers : [resultLayer, ...data.layers]
+      };
+      setData(newData);
+      setLayerColors(prev => ({ ...prev, [resultLayer]: color }));
+
+      const newActive = new Set(activeLayers);
+      newActive.add(resultLayer);
+      contextLayers.forEach(l => {
+          if (data.layers.includes(l)) newActive.add(l);
+      });
+      setActiveLayers(newActive);
   };
 
   const exportPng = () => {
@@ -267,7 +323,7 @@ const App: React.FC = () => {
     const x = (pdfWidth - w) / 2;
     const y = (pdfHeight - h) / 2;
 
-    pdf.setFillColor(15, 23, 42); // Match bg color
+    pdf.setFillColor(15, 23, 42); 
     pdf.rect(0, 0, pdfWidth, pdfHeight, 'F');
     pdf.addImage(imgData, 'PNG', x, y, w, h);
     pdf.save(`${file.name.replace('.dxf', '')}_export.pdf`);
@@ -389,15 +445,26 @@ const App: React.FC = () => {
 
         <div className="p-4 border-t border-slate-800 space-y-3">
             <p className="text-xs text-slate-500 font-medium mb-2">ANALYSIS</p>
-            <Button 
-              onClick={calculateBeams} 
-              disabled={!data || isLoading} 
-              variant="primary" 
-              className="w-full justify-start text-sm bg-green-600 hover:bg-green-700 shadow-green-500/20"
-              icon={<Calculator size={16} />}
-            >
-              Calculate Beam Lengths
-            </Button>
+            <div className="grid grid-cols-2 gap-2">
+                <Button 
+                  onClick={calculateBeams} 
+                  disabled={!data || isLoading} 
+                  variant="primary" 
+                  className="w-full justify-center text-xs bg-green-600 hover:bg-green-700"
+                  title="Calculate Beams"
+                >
+                  <Calculator size={14} className="mr-1"/> Beams
+                </Button>
+                <Button 
+                  onClick={calculateWalls} 
+                  disabled={!data || isLoading} 
+                  variant="primary" 
+                  className="w-full justify-center text-xs bg-slate-600 hover:bg-slate-700"
+                  title="Calculate Walls"
+                >
+                  <Boxes size={14} className="mr-1"/> Walls
+                </Button>
+            </div>
 
             <div className="h-px bg-slate-800 my-2"></div>
             
@@ -438,6 +505,7 @@ const App: React.FC = () => {
           data={data} 
           activeLayers={activeLayers} 
           layerColors={layerColors}
+          filledLayers={filledLayers}
           onRef={(ref) => canvasRef.current = ref} 
         />
         
