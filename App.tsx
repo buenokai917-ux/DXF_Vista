@@ -30,7 +30,7 @@ interface Transform {
 
 const App: React.FC = () => {
   const [file, setFile] = useState<File | null>(null);
-  const [encoding, setEncoding] = useState<string>('utf-8');
+  const [encoding, setEncoding] = useState<string>('gbk');
   const [data, setData] = useState<DxfData | null>(null);
   const [activeLayers, setActiveLayers] = useState<Set<string>>(new Set());
   const [filledLayers, setFilledLayers] = useState<Set<string>>(new Set());
@@ -176,12 +176,14 @@ const App: React.FC = () => {
     const targetLayers = ['BEAM', 'BEAM_CON'];
     const wallLayer = 'WALL';
     const colLayer = 'COLU';
+    const axisLayer = 'AXIS';
     
     const resultLayer = 'BEAM_CALC';
     const contextLayers = ['WALL', 'COLU', 'AXIS', 'Z主楼梁筋（横向）', 'Z主楼梁筋（纵向）'];
 
     const entities = extractEntities(targetLayers, data.entities, data.blocks);
     const obstacles = extractEntities([wallLayer, colLayer], data.entities, data.blocks);
+    const axisEntities = extractEntities([axisLayer], data.entities, data.blocks).filter(e => e.type === EntityType.LINE);
 
     const newEntities: DxfEntity[] = [];
 
@@ -191,7 +193,8 @@ const App: React.FC = () => {
 
     // 1. Process Parallel Lines (Filling mode)
     // Pass obstacles to allow beams to snap to walls/columns
-    const generatedPolygons = findParallelPolygons(lines, 1200, resultLayer, obstacles);
+    // Pass axisEntities to validate beams
+    const generatedPolygons = findParallelPolygons(lines, 1200, resultLayer, obstacles, axisEntities);
     
     // 2. Process Existing Polylines
     const existingPolygons = polylines.map(p => ({ ...p, layer: resultLayer }));
