@@ -55,15 +55,14 @@ const App: React.FC = () => {
     reader.onload = (e) => {
       const content = e.target?.result as string;
       try {
-        const parsed = parseDxf(content);
+        // Pass the user-selected encoding to the parser
+        const parsed = parseDxf(content, encoding);
         setData(parsed);
         setActiveLayers(new Set(parsed.layers));
         
         // Generate consistent colors for layers
         const colors: LayerColors = {};
         parsed.layers.forEach((layer, index) => {
-           // Use a hash of the name to pick a stable color from the palette, or just cycle
-           // Hashing ensures the same layer name always gets the same color across reloads
            let hash = 0;
            for (let i = 0; i < layer.length; i++) {
              hash = layer.charCodeAt(i) + ((hash << 5) - hash);
