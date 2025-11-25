@@ -22,11 +22,14 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
   }, [onRef]);
 
   // Calculate Bounds (Recursive for Blocks)
-  const getBounds = useCallback((entities: DxfEntity[], blocks?: Record<string, DxfEntity[]>): Bounds => {
+  const getBounds = useCallback((entities: DxfEntity[], blocks: Record<string, DxfEntity[]>): Bounds => {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     let hasEntities = false;
 
     const checkPoint = (x: number, y: number) => {
+      // Guard against invalid coordinates
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      
       hasEntities = true;
       if (x < minX) minX = x;
       if (y < minY) minY = y;
@@ -34,22 +37,86 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
       if (y > maxY) maxY = y;
     };
 
-    const processEntity = (ent: DxfEntity, offsetX = 0, offsetY = 0) => {
+    const processEntity = (ent: DxfEntity, offsetX = 0, offsetY = 0, scaleX = 1, scaleY = 1, rotation = 0) => {
+       // Helper to transform a local point to global bounds
+       const transformAndCheck = (localX: number, localY: number) => {
+          // Apply Scale
+          let tx = localX * scaleX;
+          let ty = localY * scaleY;
+          
+          // Apply Rotation
+          if (rotation !== 0) {
+              const rad = rotation * Math.PI / 180;
+              const cos = Math.cos(rad);
+              const sin = Math.sin(rad);
+              const rx = tx * cos - ty * sin;
+              const ry = tx * sin + ty * cos;
+              tx = rx;
+              ty = ry;
+          }
+
+          // Apply Translation
+          checkPoint(tx + offsetX, ty + offsetY);
+       };
+
        if (ent.type === EntityType.LINE && ent.start && ent.end) {
-         checkPoint(ent.start.x + offsetX, ent.start.y + offsetY);
-         checkPoint(ent.end.x + offsetX, ent.end.y + offsetY);
+         transformAndCheck(ent.start.x, ent.start.y);
+         transformAndCheck(ent.end.x, ent.end.y);
        } else if (ent.type === EntityType.LWPOLYLINE && ent.vertices) {
-         ent.vertices.forEach(v => checkPoint(v.x + offsetX, v.y + offsetY));
+         ent.vertices.forEach(v => transformAndCheck(v.x, v.y));
        } else if ((ent.type === EntityType.CIRCLE || ent.type === EntityType.ARC) && ent.center && ent.radius) {
-         checkPoint(ent.center.x + offsetX - ent.radius, ent.center.y + offsetY - ent.radius);
-         checkPoint(ent.center.x + offsetX + ent.radius, ent.center.y + offsetY + ent.radius);
-       } else if ((ent.type === EntityType.TEXT || ent.type === EntityType.INSERT || ent.type === EntityType.ATTRIB) && ent.start) {
-         checkPoint(ent.start.x + offsetX, ent.start.y + offsetY);
+         // Approximate circle bounds by 4 points
+         transformAndCheck(ent.center.x - ent.radius, ent.center.y - ent.radius);
+         transformAndCheck(ent.center.x + ent.radius, ent.center.y + ent.radius);
+       } else if ((ent.type === EntityType.TEXT || ent.type === EntityType.ATTRIB) && ent.start) {
+         transformAndCheck(ent.start.x, ent.start.y);
        } else if (ent.type === EntityType.DIMENSION) {
-          if (ent.measureStart) checkPoint(ent.measureStart.x + offsetX, ent.measureStart.y + offsetY);
-          if (ent.measureEnd) checkPoint(ent.measureEnd.x + offsetX, ent.measureEnd.y + offsetY);
-          if (ent.start) checkPoint(ent.start.x + offsetX, ent.start.y + offsetY); // definition point
-          if (ent.end) checkPoint(ent.end.x + offsetX, ent.end.y + offsetY); // text point
+          if (ent.measureStart) transformAndCheck(ent.measureStart.x, ent.measureStart.y);
+          if (ent.measureEnd) transformAndCheck(ent.measureEnd.x, ent.measureEnd.y);
+          if (ent.end) transformAndCheck(ent.end.x, ent.end.y); 
+       } else if (ent.type === EntityType.INSERT && ent.start && ent.blockName && blocks[ent.blockName]) {
+          // Recursive Block Handling
+          const subEntities = blocks[ent.blockName];
+          const insX = ent.start.x + offsetX; // This isn't quite right for recursion with rotation, 
+                                              // but simple offset + recursion handles 99% of cases correctly for bounds.
+                                              // Correct way is to pass accumulated transform.
+          
+          // For bounds, we need to transform the block's content relative to THIS insert, 
+          // and then apply the PARENT's transform. 
+          // To simplify, we rely on the transformAndCheck which applies the accumulated context.
+          // But we need to pass the NEW accumulated context to the child.
+          
+          // Actually, let's just transform the insert point using current context, 
+          // and then recursively process children with combined transform.
+          // Note: Full matrix multiplication is better, but this approximates well for typical 2D CAD.
+          
+          // Let's keep it simple: Map the block content's bounds into the parent space.
+          // Complex recursion for bounds can be slow. 
+          // Optimization: Just check the insertion point for now to ensure we don't crash, 
+          // or do 1 level deep if critical.
+          
+          // Let's do full recursion properly.
+          // New Offset = Current Offset + (Rotated/Scaled Insert Position)
+          // Actually, `ent.start` is local to the current context.
+          
+          // Let's compute the World Pos of the insert point
+          let insLocalX = ent.start.x * scaleX;
+          let insLocalY = ent.start.y * scaleY;
+          if (rotation !== 0) {
+             const r = rotation * Math.PI / 180;
+             const tx = insLocalX * Math.cos(r) - insLocalY * Math.sin(r);
+             const ty = insLocalX * Math.sin(r) + insLocalY * Math.cos(r);
+             insLocalX = tx;
+             insLocalY = ty;
+          }
+          const nextOffsetX = offsetX + insLocalX;
+          const nextOffsetY = offsetY + insLocalY;
+
+          const nextScaleX = scaleX * (ent.scale?.x || 1);
+          const nextScaleY = scaleY * (ent.scale?.y || 1);
+          const nextRotation = rotation + (ent.rotation || 0);
+
+          subEntities.forEach(sub => processEntity(sub, nextOffsetX, nextOffsetY, nextScaleX, nextScaleY, nextRotation));
        }
     };
 
@@ -66,13 +133,12 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
     const bounds = getBounds(data.entities, data.blocks);
     const rect = containerRef.current.getBoundingClientRect();
     
-    const dataWidth = bounds.maxX - bounds.minX;
-    const dataHeight = bounds.maxY - bounds.minY;
+    let dataWidth = bounds.maxX - bounds.minX;
+    let dataHeight = bounds.maxY - bounds.minY;
     
-    if (dataWidth === 0 || dataHeight === 0) {
-        setTransform({ k: 1, x: 0, y: 0 });
-        return;
-    }
+    // Safety check for empty or single-point bounds
+    if (dataWidth <= 0) dataWidth = 100;
+    if (dataHeight <= 0) dataHeight = 100;
 
     const padding = 40;
     const availableWidth = rect.width - (padding * 2);
@@ -80,7 +146,10 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
 
     const scaleX = availableWidth / dataWidth;
     const scaleY = availableHeight / dataHeight;
-    const k = Math.min(scaleX, scaleY);
+    
+    // Guard against infinity
+    let k = Math.min(scaleX, scaleY);
+    if (!Number.isFinite(k) || k === 0) k = 1;
     
     const midX = bounds.minX + dataWidth / 2;
     const midY = bounds.minY + dataHeight / 2;
@@ -170,6 +239,9 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
     const drawEntity = (ent: DxfEntity, contextLayer: string, accumulatedScale: number) => {
        if (ent.type === EntityType.ATTRIB && ent.invisible) return;
 
+       // Prevent rendering if scale is too small or infinite
+       if (!Number.isFinite(accumulatedScale) || accumulatedScale === 0) return;
+
        const effectiveLayer = ent.layer === '0' ? contextLayer : ent.layer;
        if (!activeLayers.has(effectiveLayer)) return;
        
@@ -177,8 +249,9 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
        ctx.strokeStyle = color;
        ctx.fillStyle = color;
 
-       // Dynamic line width
-       ctx.lineWidth = 2 / (transform.k * Math.abs(accumulatedScale));
+       // Dynamic line width - clamp to avoid errors
+       const lineWidth = Math.max(0.1, 2 / (transform.k * Math.abs(accumulatedScale)));
+       ctx.lineWidth = lineWidth;
 
        ctx.beginPath();
 

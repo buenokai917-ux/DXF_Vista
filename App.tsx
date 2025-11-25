@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { jsPDF } from 'jspdf';
 import { parseDxf } from './utils/dxfParser';
-import { DxfData, LayerColors, DxfEntity, EntityType } from './types';
-import { calculateLength, getCenter } from './utils/geometryUtils';
+import { DxfData, LayerColors, DxfEntity, EntityType, Point } from './types';
+import { getBeamProperties, getCenter, transformPoint } from './utils/geometryUtils';
 import { Viewer } from './components/Viewer';
 import { Button } from './components/Button';
 import { Upload, Layers, Download, Image as ImageIcon, FileText, Settings, X, RefreshCw, Globe, Search, Calculator } from 'lucide-react';
@@ -21,6 +21,12 @@ const CAD_COLORS = [
   '#FFA500', // Orange
   '#A52A2A', // Brown
 ];
+
+interface Transform {
+  scale: Point;
+  rotation: number;
+  translation: Point;
+}
 
 const App: React.FC = () => {
   const [file, setFile] = useState<File | null>(null);
@@ -124,35 +130,81 @@ const App: React.FC = () => {
     const newEntities: DxfEntity[] = [];
     let count = 0;
 
-    data.entities.forEach(ent => {
-       if (targetLayers.includes(ent.layer)) {
-         const length = calculateLength(ent);
-         if (length > 0) {
-           const center = getCenter(ent);
-           if (center) {
-             // 1. Add Highlight Entity
-             newEntities.push({
-               ...ent,
-               layer: resultLayer
+    // Recursive function to process entities, including those inside Blocks
+    const processEntities = (entities: DxfEntity[], transform: Transform) => {
+       entities.forEach(ent => {
+          // If Block (INSERT), recurse
+          if (ent.type === EntityType.INSERT && ent.blockName && data.blocks[ent.blockName]) {
+             // Calculate new transform
+             const block = data.blocks[ent.blockName];
+             const tScale = { 
+               x: transform.scale.x * (ent.scale?.x || 1), 
+               y: transform.scale.y * (ent.scale?.y || 1) 
+             };
+             const tRotation = transform.rotation + (ent.rotation || 0);
+             // Position of the insert in CURRENT transform space
+             const tPos = transformPoint(ent.start || {x:0, y:0}, transform.scale, transform.rotation, transform.translation);
+             
+             processEntities(block, {
+               scale: tScale,
+               rotation: tRotation,
+               translation: tPos
              });
+             return;
+          }
 
-             // 2. Add Text Label
-             newEntities.push({
-               type: EntityType.TEXT,
-               layer: resultLayer,
-               start: center,
-               text: `L=${Math.round(length)}`,
-               radius: 250, // Approximate text height, meaningful in CAD units
-               startAngle: 0
-             });
-             count++;
-           }
-         }
-       }
-    });
+          // If Target Layer (BEAM)
+          if (targetLayers.includes(ent.layer)) {
+             const props = getBeamProperties(ent);
+             if (props.length > 0) {
+                 // Clone geometry to World Space for visualization
+                 const center = getCenter(ent);
+                 if (center) {
+                    const worldCenter = transformPoint(center, transform.scale, transform.rotation, transform.translation);
+                    const worldAngle = props.angle + transform.rotation; // Approximate angle
+
+                    // 1. Add Text Label at World Center
+                    newEntities.push({
+                        type: EntityType.TEXT,
+                        layer: resultLayer,
+                        start: worldCenter,
+                        text: `L=${Math.round(props.length)}`, // Length matches geometry regardless of scale (usually 1:1 in beam plans)
+                        radius: 250, // Fixed size text
+                        startAngle: worldAngle % 180 === 0 ? 0 : worldAngle // Keep text readable
+                    });
+
+                    // 2. Add Highlight Geometry (Transformed)
+                    if (ent.type === EntityType.LWPOLYLINE && ent.vertices) {
+                        const worldVertices = ent.vertices.map(v => 
+                            transformPoint(v, transform.scale, transform.rotation, transform.translation)
+                        );
+                        newEntities.push({
+                            type: EntityType.LWPOLYLINE,
+                            layer: resultLayer,
+                            vertices: worldVertices,
+                            closed: ent.closed
+                        });
+                    } else if (ent.type === EntityType.LINE && ent.start && ent.end) {
+                         newEntities.push({
+                            type: EntityType.LINE,
+                            layer: resultLayer,
+                            start: transformPoint(ent.start, transform.scale, transform.rotation, transform.translation),
+                            end: transformPoint(ent.end, transform.scale, transform.rotation, transform.translation),
+                        });
+                    }
+
+                    count++;
+                 }
+             }
+          }
+       });
+    };
+
+    // Start processing from top-level entities
+    processEntities(data.entities, { scale: {x:1, y:1}, rotation: 0, translation: {x:0, y:0} });
 
     if (count === 0) {
-      alert("No entities found on BEAM or BEAM_CON layers.");
+      alert("No entities found on BEAM or BEAM_CON layers (checked blocks recursively).");
       return;
     }
 
@@ -176,7 +228,7 @@ const App: React.FC = () => {
     });
     setActiveLayers(newActive);
     
-    alert(`Calculated lengths for ${count} beam segments. Added to layer: ${resultLayer}`);
+    alert(`Calculated lengths for ${count} beam segments (including blocks). Added to layer: ${resultLayer}`);
   };
 
   const exportPng = () => {

@@ -18,6 +18,12 @@ export const getEntityBounds = (entity: DxfEntity): Bounds | null => {
     update(entity.end);
   } else if (entity.type === EntityType.LWPOLYLINE && entity.vertices) {
     entity.vertices.forEach(update);
+  } else if ((entity.type === EntityType.CIRCLE || entity.type === EntityType.ARC) && entity.center && entity.radius) {
+    update({ x: entity.center.x - entity.radius, y: entity.center.y - entity.radius });
+    update({ x: entity.center.x + entity.radius, y: entity.center.y + entity.radius });
+  } else if ((entity.type === EntityType.TEXT || entity.type === EntityType.INSERT) && entity.start) {
+    // Basic point check for single point entities to avoid infinite bounds
+    update(entity.start);
   } else {
     return null;
   }
@@ -45,6 +51,32 @@ export const getCenter = (entity: DxfEntity): Point | null => {
   return entity.center || entity.start || null;
 };
 
+// Returns beam properties: length and angle (in degrees)
+export const getBeamProperties = (entity: DxfEntity): { length: number, angle: number } => {
+  if (entity.type === EntityType.LWPOLYLINE && entity.vertices && entity.vertices.length > 0) {
+      if (entity.closed) {
+         // Find the longest segment to determine length and orientation
+         let maxLen = 0;
+         let angle = 0;
+         const verts = entity.vertices;
+         const count = verts.length;
+         
+         for(let i=0; i<count; i++) {
+             const p1 = verts[i];
+             const p2 = verts[(i+1) % count];
+             const d = distance(p1, p2);
+             if (d > maxLen) {
+                 maxLen = d;
+                 // Calculate angle in degrees
+                 angle = Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180 / Math.PI;
+             }
+         }
+         return { length: maxLen, angle };
+      }
+  }
+  return { length: calculateLength(entity), angle: 0 };
+};
+
 export const calculateLength = (entity: DxfEntity): number => {
   switch (entity.type) {
     case EntityType.LINE:
@@ -55,18 +87,11 @@ export const calculateLength = (entity: DxfEntity): number => {
 
     case EntityType.LWPOLYLINE:
       if (entity.vertices && entity.vertices.length > 1) {
-        // If it's a closed polyline (like a beam outline), the "length" of the beam
-        // is essentially the longest dimension of its bounding box, not the perimeter.
         if (entity.closed) {
-           const bounds = getEntityBounds(entity);
-           if (bounds) {
-             const width = bounds.maxX - bounds.minX;
-             const height = bounds.maxY - bounds.minY;
-             return Math.max(width, height);
-           }
+           const props = getBeamProperties(entity);
+           return props.length;
         }
 
-        // If open, calculate path length
         let len = 0;
         for (let i = 0; i < entity.vertices.length - 1; i++) {
           len += distance(entity.vertices[i], entity.vertices[i + 1]);
@@ -76,14 +101,11 @@ export const calculateLength = (entity: DxfEntity): number => {
       return 0;
 
     case EntityType.CIRCLE:
-      if (entity.radius) {
-        return 2 * Math.PI * entity.radius;
-      }
+      if (entity.radius) return 2 * Math.PI * entity.radius;
       return 0;
 
     case EntityType.ARC:
       if (entity.radius && entity.startAngle !== undefined && entity.endAngle !== undefined) {
-        // Angles are in degrees
         let diff = entity.endAngle - entity.startAngle;
         if (diff < 0) diff += 360;
         return (diff * Math.PI / 180) * entity.radius;
@@ -95,16 +117,26 @@ export const calculateLength = (entity: DxfEntity): number => {
   }
 };
 
-export const getEntityCoordinatesString = (entity: DxfEntity): string => {
-  const round = (n: number) => Math.round(n * 100) / 100;
-  const ptStr = (p: Point) => `(${round(p.x)}, ${round(p.y)})`;
+/**
+ * Transforms a point based on standard DXF Insert logic:
+ * P_world = RotationMatrix * (Scale * P_local) + Translation
+ */
+export const transformPoint = (p: Point, scale: Point, rotationDeg: number, translation: Point): Point => {
+  // 1. Scale
+  const sx = p.x * (scale.x || 1);
+  const sy = p.y * (scale.y || 1);
 
-  if (entity.type === EntityType.LINE && entity.start && entity.end) {
-    return `${ptStr(entity.start)} → ${ptStr(entity.end)}`;
-  } else if (entity.type === EntityType.LWPOLYLINE && entity.vertices && entity.vertices.length > 0) {
-    return `${entity.vertices.length} pts, start: ${ptStr(entity.vertices[0])}`;
-  } else if ((entity.type === EntityType.CIRCLE || entity.type === EntityType.ARC) && entity.center && entity.radius) {
-    return `Center: ${ptStr(entity.center)}, R: ${round(entity.radius)}`;
-  }
-  return "N/A";
+  // 2. Rotate
+  const rad = rotationDeg * Math.PI / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  
+  const rx = sx * cos - sy * sin;
+  const ry = sx * sin + sy * cos;
+
+  // 3. Translate
+  return {
+    x: rx + translation.x,
+    y: ry + translation.y
+  };
 };
