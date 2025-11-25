@@ -2,15 +2,40 @@ import { DxfData, DxfEntity, EntityType, Point } from '../types';
 
 /**
  * Helper to decode DXF string format.
- * Handles \U+XXXX unicode escapes and standard symbols like %%d.
+ * Handles \U+XXXX unicode, MTEXT formatting {\W...;}, and standard symbols like %%d.
  */
 const decodeDxfString = (str: string): string => {
-  return str
-    .replace(/\\U\+([0-9A-Fa-f]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
-    .replace(/\\M\+1([0-9A-Fa-f]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
-    .replace(/%%c/gi, 'ø')
-    .replace(/%%d/gi, '°')
-    .replace(/%%p/gi, '±');
+  let s = str;
+
+  // 1. Unicode Decoding
+  s = s.replace(/\\U\+([0-9A-Fa-f]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+  s = s.replace(/\\M\+1([0-9A-Fa-f]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+
+  // 2. MTEXT Formatting Stripping
+  // Replace New Paragraph \P with newline
+  s = s.replace(/\\P/gi, '\n');
+  
+  // Strip formatting properties with arguments ending in ; (e.g. \W0.8; \Ftxt; \H10;)
+  // Matches Backslash + [ACFHQTW] + any chars + ;
+  s = s.replace(/\\[ACFHQTW][^;]*;/gi, '');
+  
+  // Strip Stacking \S...; (e.g. \S1/2;) -> Keep the content "1/2"
+  s = s.replace(/\\S([^;]*);/gi, '$1');
+  
+  // Strip simple switches (e.g. \L for underline, \O for overline)
+  s = s.replace(/\\[LOKlok]/g, '');
+
+  // Strip grouping braces {} (Common in MTEXT like {\W...;Text})
+  s = s.replace(/[{}]/g, '');
+
+  // 3. Standard Symbols
+  s = s.replace(/%%c/gi, 'ø');
+  s = s.replace(/%%d/gi, '°');
+  s = s.replace(/%%p/gi, '±');
+  s = s.replace(/%%u/gi, ''); // Underline toggle (not supported in simple canvas)
+  s = s.replace(/%%o/gi, ''); // Overline toggle
+
+  return s.trim();
 };
 
 /**
@@ -283,14 +308,24 @@ const parseProperty = (code: number, value: string, entity: Partial<DxfEntity>) 
       }
       break;
       
-    case 11: // End X
-      if (!entity.end) entity.end = { x: 0, y: 0 };
-      entity.end.x = valNum;
-      break;
-    case 21: // End Y
-      if (!entity.end) entity.end = { x: 0, y: 0 };
-      entity.end.y = valNum;
-      break;
+    case 11: // End X (TEXT) or Direction X (MTEXT)
+       if (entity._originalType === 'MTEXT') {
+           if (!entity.xAxis) entity.xAxis = { x: 0, y: 0 };
+           entity.xAxis.x = valNum;
+       } else {
+           if (!entity.end) entity.end = { x: 0, y: 0 };
+           entity.end.x = valNum;
+       }
+       break;
+    case 21: // End Y (TEXT) or Direction Y (MTEXT)
+       if (entity._originalType === 'MTEXT') {
+           if (!entity.xAxis) entity.xAxis = { x: 0, y: 0 };
+           entity.xAxis.y = valNum;
+       } else {
+           if (!entity.end) entity.end = { x: 0, y: 0 };
+           entity.end.y = valNum;
+       }
+       break;
 
     case 13: // Measure Start X (Dimension)
       if (!entity.measureStart) entity.measureStart = { x: 0, y: 0 };
@@ -315,7 +350,6 @@ const parseProperty = (code: number, value: string, entity: Partial<DxfEntity>) 
       break;
     
     case 41: // Scale X (Insert)
-      // If scale hasn't been set, init it to valNum, valNum (uniform scale assumption)
       if (!entity.scale) {
           entity.scale = { x: valNum, y: valNum };
       } else {
@@ -329,10 +363,12 @@ const parseProperty = (code: number, value: string, entity: Partial<DxfEntity>) 
 
     case 50: // Angle / Rotation
       if (entity._originalType === 'MTEXT') {
+          // MTEXT angle is in radians
           entity.startAngle = valNum * (180 / Math.PI);
       } else if (entity.type === EntityType.INSERT) {
           entity.rotation = valNum;
       } else {
+          // TEXT angle is in degrees
           entity.startAngle = valNum; 
       }
       break;
@@ -361,6 +397,14 @@ const parseProperty = (code: number, value: string, entity: Partial<DxfEntity>) 
 
 const finalizeEntity = (raw: Partial<DxfEntity>, list: DxfEntity[], layers: Set<string>) => {
   if (raw.type === EntityType.UNKNOWN) return;
+  
+  // Fix MTEXT rotation based on direction vector if present
+  if (raw._originalType === 'MTEXT' && raw.xAxis) {
+      // Calculate angle from vector (atan2 returns radians)
+      // We convert to degrees for consistency with startAngle usage
+      raw.startAngle = Math.atan2(raw.xAxis.y, raw.xAxis.x) * (180 / Math.PI);
+  }
+
   if (raw.layer) layers.add(raw.layer);
   list.push(raw as DxfEntity);
 };

@@ -220,7 +220,14 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
           
           const height = ent.radius || 10; 
           ctx.font = `${height}px monospace`;
-          ctx.fillText(ent.text, 0, 0);
+          
+          // Render multiline text
+          const lines = ent.text.split('\n');
+          lines.forEach((line, i) => {
+            // Render lines downwards
+            ctx.fillText(line, 0, i * height * 1.25);
+          });
+          
           ctx.restore();
       }
       else if (ent.type === EntityType.DIMENSION) {
@@ -259,9 +266,7 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
           
           ctx.scale(scaleX, scaleY);
           
-          // Recurse with updated scale. We use scaleX as an approximation for uniform scale
-          // to determine line width. If non-uniform, lines might vary in thickness, 
-          // but this prevents the "Giant Blob" issue.
+          // Recurse with updated scale.
           const nextAccumulatedScale = accumulatedScale * scaleX;
           
           blockEntities.forEach(subEnt => drawEntity(subEnt, effectiveLayer, nextAccumulatedScale));
@@ -310,6 +315,10 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
             <ZoomOut size={18} />
         </button>
         <div className="w-px h-4 bg-slate-600 mx-1"></div>
+        <span className="text-xs text-slate-300 font-mono w-16 text-center select-none">
+            {Math.round(transform.k * 100)}%
+        </span>
+        <div className="w-px h-4 bg-slate-600 mx-1"></div>
         <button onClick={fitToScreen} className="p-2 hover:bg-slate-700 rounded-full text-blue-400 hover:text-blue-300 transition-colors" title="Fit to Screen">
             <Maximize size={18} />
         </button>
@@ -317,10 +326,6 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
         <button onClick={() => handleZoomBtn(1.2)} className="p-2 hover:bg-slate-700 rounded-full text-slate-300 hover:text-white transition-colors" title="Zoom In">
             <ZoomIn size={18} />
         </button>
-      </div>
-
-      <div className="absolute top-4 right-4 bg-slate-800/80 px-3 py-1 rounded text-xs text-slate-400 pointer-events-none border border-slate-700/50">
-        Zoom: {transform.k.toFixed(2)}x
       </div>
     </div>
   );

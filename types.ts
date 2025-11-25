@@ -37,6 +37,9 @@ export interface DxfEntity {
   scale?: Point; // X=41, Y=42, Z=43
   rotation?: number; // Code 50
 
+  // For MTEXT direction
+  xAxis?: Point; // Code 11, 21
+
   // For distinguishing MTEXT vs TEXT during parsing
   _originalType?: string; 
 }
