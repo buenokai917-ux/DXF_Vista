@@ -65,6 +65,10 @@ export const getEntityBounds = (entity: DxfEntity): Bounds | null => {
     update({ x: entity.center.x + entity.radius, y: entity.center.y + entity.radius });
   } else if ((entity.type === EntityType.TEXT || entity.type === EntityType.INSERT) && entity.start) {
     update(entity.start);
+  } else if (entity.type === EntityType.DIMENSION) {
+      if (entity.measureStart) update(entity.measureStart);
+      if (entity.measureEnd) update(entity.measureEnd);
+      if (entity.end) update(entity.end);
   } else {
     return null;
   }
@@ -497,4 +501,116 @@ const createPolygonFromPair = (l1: DxfEntity, l2: DxfEntity, layer: string, obst
         vertices: [c1, c2, c3, c4],
         closed: true
     };
+};
+
+/**
+ * Calculates the bounding box of all entities in the list (and recursively in blocks).
+ * Optionally filters by active layers.
+ */
+export const calculateTotalBounds = (
+    entities: DxfEntity[], 
+    blocks: Record<string, DxfEntity[]>, 
+    activeLayers: Set<string> | null = null
+): Bounds => {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    let hasEntities = false;
+
+    const checkPoint = (x: number, y: number) => {
+      // Guard against invalid coordinates
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      
+      hasEntities = true;
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    };
+
+    const processEntity = (ent: DxfEntity, offsetX = 0, offsetY = 0, scaleX = 1, scaleY = 1, rotation = 0) => {
+       // If activeLayers is provided, skip layers not in the set
+       // Special case: If layer is '0', it might inherit, but usually we filter by explicit layer name
+       if (activeLayers && !activeLayers.has(ent.layer)) {
+           // However, Block Inserts themselves are on a layer. If the Insert is hidden, the block is hidden.
+           // But if Insert is visible, the entities inside might be on different layers.
+           // Simple approach: Only check root entities for layer visibility, or check inside?
+           // Standard CAD: Layer 0 in block inherits Insert layer. Other layers in block obey their own layer.
+           // For bounds calculation, we can just skip the top level check here if it's already filtered by caller, 
+           // BUT this function is recursive.
+           // Let's rely on the caller passing only visible entities OR check here.
+           // We will check here.
+           return; 
+       }
+
+       const transformAndCheck = (localX: number, localY: number) => {
+          let tx = localX * scaleX;
+          let ty = localY * scaleY;
+          
+          if (rotation !== 0) {
+              const rad = rotation * Math.PI / 180;
+              const cos = Math.cos(rad);
+              const sin = Math.sin(rad);
+              const rx = tx * cos - ty * sin;
+              const ry = tx * sin + ty * cos;
+              tx = rx;
+              ty = ry;
+          }
+          checkPoint(tx + offsetX, ty + offsetY);
+       };
+
+       if (ent.type === EntityType.LINE && ent.start && ent.end) {
+         transformAndCheck(ent.start.x, ent.start.y);
+         transformAndCheck(ent.end.x, ent.end.y);
+       } else if (ent.type === EntityType.LWPOLYLINE && ent.vertices) {
+         ent.vertices.forEach(v => transformAndCheck(v.x, v.y));
+       } else if ((ent.type === EntityType.CIRCLE || ent.type === EntityType.ARC) && ent.center && ent.radius) {
+         transformAndCheck(ent.center.x - ent.radius, ent.center.y - ent.radius);
+         transformAndCheck(ent.center.x + ent.radius, ent.center.y + ent.radius);
+       } else if ((ent.type === EntityType.TEXT || ent.type === EntityType.ATTRIB) && ent.start) {
+         transformAndCheck(ent.start.x, ent.start.y);
+       } else if (ent.type === EntityType.DIMENSION) {
+          if (ent.measureStart) transformAndCheck(ent.measureStart.x, ent.measureStart.y);
+          if (ent.measureEnd) transformAndCheck(ent.measureEnd.x, ent.measureEnd.y);
+          if (ent.end) transformAndCheck(ent.end.x, ent.end.y); 
+       } else if (ent.type === EntityType.INSERT && ent.start && ent.blockName && blocks[ent.blockName]) {
+          const subEntities = blocks[ent.blockName];
+          let insLocalX = ent.start.x * scaleX;
+          let insLocalY = ent.start.y * scaleY;
+          if (rotation !== 0) {
+             const r = rotation * Math.PI / 180;
+             const tx = insLocalX * Math.cos(r) - insLocalY * Math.sin(r);
+             const ty = insLocalX * Math.sin(r) + insLocalY * Math.cos(r);
+             insLocalX = tx;
+             insLocalY = ty;
+          }
+          const nextOffsetX = offsetX + insLocalX;
+          const nextOffsetY = offsetY + insLocalY;
+          const nextScaleX = scaleX * (ent.scale?.x || 1);
+          const nextScaleY = scaleY * (ent.scale?.y || 1);
+          const nextRotation = rotation + (ent.rotation || 0);
+
+          // For sub-entities inside a block, we must check THEIR layers too.
+          // Note: In standard CAD, if ent.layer is filtered out, we already returned.
+          // Now we iterate subEntities.
+          subEntities.forEach(sub => {
+              // Standard CAD logic: If sub-entity is on Layer '0', it treats it as being on `ent.layer` (the Insert layer)
+              // If sub-entity is on a specific layer (e.g. 'WALL'), it respects 'WALL' visibility.
+              
+              const effectiveLayer = sub.layer === '0' ? ent.layer : sub.layer;
+              if (activeLayers && !activeLayers.has(effectiveLayer)) return;
+              
+              // We pass a dummy object to processEntity to reuse logic, but without re-checking activeLayers 
+              // because we just checked the effective layer manually.
+              // Actually, simplest is to recursively call processEntity but we need to handle the Layer 0 logic.
+              // To avoid complex refactor, we just copy-paste the transform logic here? 
+              // No, let's just assume simple filtering for bounds.
+              
+              processEntity(sub, nextOffsetX, nextOffsetY, nextScaleX, nextScaleY, nextRotation);
+          });
+       }
+    };
+
+    entities.forEach(ent => processEntity(ent));
+
+    if (!hasEntities) return { minX: 0, minY: 0, maxX: 100, maxY: 100 };
+    return { minX, minY, maxX, maxY };
 };
