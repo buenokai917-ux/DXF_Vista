@@ -216,13 +216,8 @@ const getRayIntersection = (start: Point, dir: Point, obstacles: DxfEntity[]): n
         const bounds = getEntityBounds(obs);
         if (!bounds) continue;
         
-        // Expand bounds slightly (e.g. 1mm) to ensure robust hit
-        const expanded = { 
-            minX: bounds.minX - 1, minY: bounds.minY - 1,
-            maxX: bounds.maxX + 1, maxY: bounds.maxY + 1
-        };
-
-        const dist = rayIntersectsBox(start, ndir, expanded);
+        // Exact bounds check for precise snapping
+        const dist = rayIntersectsBox(start, ndir, bounds);
         if (dist !== Infinity && dist < bestDist) {
             bestDist = dist;
         }
