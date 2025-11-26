@@ -5,9 +5,9 @@ import { DxfData, LayerColors, DxfEntity, EntityType, Point } from './types';
 import { getBeamProperties, getCenter, transformPoint, findParallelPolygons, calculateLength } from './utils/geometryUtils';
 import { Viewer } from './components/Viewer';
 import { Button } from './components/Button';
-import { Upload, Layers, Download, Image as ImageIcon, FileText, Settings, X, RefreshCw, Globe, Search, Calculator, Boxes } from 'lucide-react';
+import { Upload, Layers, Download, Image as ImageIcon, FileText, Settings, X, RefreshCw, Globe, Search, Calculator, Square, Box } from 'lucide-react';
 
-// Standard CAD Colors (Index 1-7 + Grays)
+// Standard CAD Colors (Index 1-7 + Grays + Common)
 const CAD_COLORS = [
   '#FF0000', // Red
   '#FFFF00', // Yellow
@@ -20,6 +20,7 @@ const CAD_COLORS = [
   '#C0C0C0', // Light Gray
   '#FFA500', // Orange
   '#A52A2A', // Brown
+  '#800080', // Purple
 ];
 
 interface Transform {
@@ -38,6 +39,7 @@ const App: React.FC = () => {
   const [layerSearchTerm, setLayerSearchTerm] = useState('');
   const [isSidebarOpen, setSidebarOpen] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
+  const [pickingColorLayer, setPickingColorLayer] = useState<string | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const ENCODINGS = [
@@ -67,15 +69,52 @@ const App: React.FC = () => {
         setData(parsed);
         setActiveLayers(new Set(parsed.layers));
         setFilledLayers(new Set());
+        setPickingColorLayer(null);
         
         const colors: LayerColors = {};
-        parsed.layers.forEach((layer, index) => {
+        // Colors preferred for general layers (Blue, Pink, Yellow, Green...)
+        const PALETTE = [
+          '#0000FF', // Blue
+          '#FF00FF', // Magenta (Pink)
+          '#FFFF00', // Yellow
+          '#00FF00', // Green
+          '#00FFFF', // Cyan
+          '#FFA500', // Orange
+          '#9333EA', // Purple
+        ];
+
+        parsed.layers.forEach((layer) => {
+           const lower = layer.toLowerCase();
+
+           // Rule 1: Text, Signature, Frame -> White
+           // "图层名字有text的，或者签名，签字，图框之类的直接使用白色"
+           if (lower.includes('text') || layer.includes('签名') || layer.includes('签字') || layer.includes('图框')) {
+             colors[layer] = '#FFFFFF';
+             return;
+           }
+
+           // Rule 2: Exact AXIS -> Red
+           // "AXIS使用红色"
+           if (layer === 'AXIS') {
+             colors[layer] = '#FF0000';
+             return;
+           }
+
+           // Rule 3: Starts with AXIS -> Green
+           // "AXIS开头，除了text'的图层使用绿色" (Rule 1 already filtered out text matches)
+           if (layer.startsWith('AXIS')) {
+             colors[layer] = '#00FF00';
+             return;
+           }
+
+           // Rule 4: Others -> Cycle through vibrant palette
+           // "其他图层如果有数据，优先使用蓝色，粉色，黄色，绿色之类的"
            let hash = 0;
            for (let i = 0; i < layer.length; i++) {
              hash = layer.charCodeAt(i) + ((hash << 5) - hash);
            }
-           const colorIndex = Math.abs(hash) % CAD_COLORS.length;
-           colors[layer] = CAD_COLORS[colorIndex];
+           const colorIndex = Math.abs(hash) % PALETTE.length;
+           colors[layer] = PALETTE[colorIndex];
         });
         setLayerColors(colors);
 
@@ -112,6 +151,13 @@ const App: React.FC = () => {
     } else {
       setActiveLayers(new Set(data.layers));
     }
+  };
+
+  const handleColorChange = (layer: string, newColor: string) => {
+    setLayerColors(prev => ({
+      ...prev,
+      [layer]: newColor
+    }));
   };
 
   const filteredLayers = useMemo(() => {
@@ -173,40 +219,36 @@ const App: React.FC = () => {
   const calculateBeams = () => {
     if (!data) return;
 
+    const allLayerNames = data.layers;
+    const beamTextLayers = allLayerNames.filter(l => l.includes('梁筋'));
+
+    // Broad search for layers, but specific for beams
     const targetLayers = ['BEAM', 'BEAM_CON'];
     const wallLayer = 'WALL';
     const colLayer = 'COLU';
     const axisLayer = 'AXIS';
     
     const resultLayer = 'BEAM_CALC';
-    const contextLayers = ['WALL', 'COLU', 'AXIS', 'Z主楼梁筋（横向）', 'Z主楼梁筋（纵向）'];
+    const contextLayers = ['WALL', 'COLU', 'AXIS', ...beamTextLayers];
 
     const entities = extractEntities(targetLayers, data.entities, data.blocks);
     const obstacles = extractEntities([wallLayer, colLayer], data.entities, data.blocks);
     const axisEntities = extractEntities([axisLayer], data.entities, data.blocks).filter(e => e.type === EntityType.LINE);
+    const textEntities = extractEntities(beamTextLayers, data.entities, data.blocks).filter(e => e.type === EntityType.TEXT);
 
     const newEntities: DxfEntity[] = [];
-
-    // Separate Lines and Polylines
     const lines = entities.filter(e => e.type === EntityType.LINE);
     const polylines = entities.filter(e => e.type === EntityType.LWPOLYLINE && e.closed);
 
-    // 1. Process Parallel Lines (Filling mode)
-    // Pass obstacles to allow beams to snap to walls/columns
-    // Pass axisEntities to validate beams (must have axis parallel and inside)
-    const generatedPolygons = findParallelPolygons(lines, 1200, resultLayer, obstacles, axisEntities);
-    
-    // 2. Process Existing Polylines
+    const generatedPolygons = findParallelPolygons(lines, 1200, resultLayer, obstacles, axisEntities, textEntities, 'BEAM');
     const existingPolygons = polylines.map(p => ({ ...p, layer: resultLayer }));
 
     const allBeams = [...generatedPolygons, ...existingPolygons];
 
     allBeams.forEach(ent => {
         const props = getBeamProperties(ent);
-        // Only consider beams of significant length (> 500mm)
         if (props.length > 500) {
-            newEntities.push(ent); // The geometry itself (filled)
-
+            newEntities.push(ent);
             const center = getCenter(ent);
             if (center) {
                 newEntities.push({
@@ -226,7 +268,6 @@ const App: React.FC = () => {
         return;
     }
 
-    // Enable filling
     const newFilled = new Set(filledLayers);
     newFilled.add(resultLayer);
     setFilledLayers(newFilled);
@@ -237,35 +278,34 @@ const App: React.FC = () => {
 
   const calculateWalls = () => {
     if (!data) return;
-    const targetLayer = 'WALL';
+    
+    // Fuzzy match for Wall layers
+    const targetLayers = data.layers.filter(l => /wall|墙/i.test(l));
+    if (targetLayers.length === 0) {
+        alert("No wall layers found (searching for 'WALL' or '墙').");
+        return;
+    }
+
+    // Need columns to snap walls to
+    const colLayers = data.layers.filter(l => /colu|column|柱/i.test(l));
+    const columnObstacles = extractEntities(colLayers, data.entities, data.blocks);
+
     const resultLayer = 'WALL_CALC';
     const contextLayers = ['AXIS', 'COLU', 'BEAM_CALC'];
 
-    const rawWallEntities = extractEntities([targetLayer], data.entities, data.blocks);
+    const rawWallEntities = extractEntities(targetLayers, data.entities, data.blocks);
+    const lines = rawWallEntities.filter(e => e.type === EntityType.LINE);
     
-    // Use parallel finder for walls (Tolerance ~600mm)
-    const walls = findParallelPolygons(rawWallEntities, 600, resultLayer);
+    // Use parallel finder for walls with 'WALL' mode
+    const walls = findParallelPolygons(lines, 600, resultLayer, columnObstacles, [], [], 'WALL');
     
-    const newEntities: DxfEntity[] = [];
-    walls.forEach(w => {
-        newEntities.push(w);
+    // Also include existing closed polylines from wall layers
+    const existingClosed = rawWallEntities.filter(e => e.type === EntityType.LWPOLYLINE && e.closed).map(e => ({...e, layer: resultLayer}));
 
-        const props = getBeamProperties(w);
-        const center = getCenter(w);
-        if (center) {
-            newEntities.push({
-                type: EntityType.TEXT,
-                layer: resultLayer,
-                start: center,
-                text: `L=${Math.round(props.length)}`,
-                radius: 250,
-                startAngle: props.angle % 180 === 0 ? 0 : props.angle
-            });
-        }
-    });
+    const newEntities: DxfEntity[] = [...walls, ...existingClosed];
 
     if (newEntities.length === 0) {
-        alert("No parallel wall lines found to calculate.");
+        alert("No parallel wall lines found.");
         return;
     }
 
@@ -273,8 +313,45 @@ const App: React.FC = () => {
     newFilled.add(resultLayer);
     setFilledLayers(newFilled);
 
-    updateDataWithCalculation(resultLayer, newEntities, '#64748b', contextLayers); 
-    alert(`Calculated ${walls.length} wall segments.`);
+    // Gray color for walls
+    updateDataWithCalculation(resultLayer, newEntities, '#94a3b8', contextLayers); 
+    alert(`Marked ${newEntities.length} wall segments.`);
+  };
+
+  const calculateColumns = () => {
+    if (!data) return;
+
+    // Fuzzy match for Column layers
+    const targetLayers = data.layers.filter(l => /colu|column|柱/i.test(l));
+    if (targetLayers.length === 0) {
+        alert("No column layers found (searching for 'COLU', 'COLUMN' or '柱').");
+        return;
+    }
+
+    const resultLayer = 'COLU_CALC';
+    const contextLayers = ['AXIS', 'WALL_CALC', 'BEAM_CALC'];
+
+    const rawEntities = extractEntities(targetLayers, data.entities, data.blocks);
+
+    // For columns, we mainly look for closed Polylines, Circles, or Blocks
+    const columnEntities = rawEntities.filter(e => 
+        (e.type === EntityType.LWPOLYLINE && e.closed) ||
+        e.type === EntityType.CIRCLE ||
+        e.type === EntityType.INSERT
+    ).map(e => ({...e, layer: resultLayer}));
+
+    if (columnEntities.length === 0) {
+        alert("No valid column objects (Closed Polylines, Circles, or Blocks) found on column layers.");
+        return;
+    }
+
+    const newFilled = new Set(filledLayers);
+    newFilled.add(resultLayer);
+    setFilledLayers(newFilled);
+
+    // Orange color for columns
+    updateDataWithCalculation(resultLayer, columnEntities, '#f59e0b', contextLayers);
+    alert(`Marked ${columnEntities.length} columns.`);
   };
 
   const updateDataWithCalculation = (resultLayer: string, newEntities: DxfEntity[], color: string, contextLayers: string[]) => {
@@ -429,22 +506,56 @@ const App: React.FC = () => {
                 <div className="text-xs text-slate-500 text-center py-4">No layers found</div>
               )}
               {filteredLayers.map((layer) => (
-                <div 
-                  key={layer} 
-                  className={`flex items-center p-2 rounded cursor-pointer transition-colors ${
-                    activeLayers.has(layer) ? 'bg-slate-800 text-slate-200' : 'text-slate-500 hover:bg-slate-800/50'
-                  }`}
-                  onClick={() => toggleLayer(layer)}
-                >
-                  <div 
-                    className="w-3 h-3 rounded-full mr-3 shrink-0" 
-                    style={{ 
-                      backgroundColor: layerColors[layer],
-                      boxShadow: activeLayers.has(layer) ? `0 0 6px ${layerColors[layer]}` : 'none',
-                      opacity: activeLayers.has(layer) ? 1 : 0.4
-                    }}
-                  ></div>
-                  <span className="text-sm truncate select-none" title={layer}>{layer}</span>
+                <div key={layer} className="flex flex-col">
+                    <div 
+                      className={`flex items-center p-2 rounded transition-colors group ${
+                        activeLayers.has(layer) ? 'bg-slate-800 text-slate-200' : 'text-slate-500 hover:bg-slate-800/50'
+                      }`}
+                    >
+                      <div 
+                        className="relative w-4 h-4 mr-3 shrink-0 cursor-pointer"
+                        onClick={(e) => {
+                           e.stopPropagation();
+                           setPickingColorLayer(pickingColorLayer === layer ? null : layer);
+                        }} 
+                        title="Click to change color"
+                      >
+                         <div 
+                            className="w-3 h-3 rounded-full absolute top-0.5 left-0.5 border border-slate-600 transition-all hover:scale-125" 
+                            style={{ 
+                              backgroundColor: layerColors[layer],
+                              boxShadow: activeLayers.has(layer) ? `0 0 6px ${layerColors[layer]}` : 'none',
+                              opacity: activeLayers.has(layer) ? 1 : 0.6
+                            }}
+                         ></div>
+                      </div>
+                      <span 
+                        className="text-sm truncate select-none flex-1 cursor-pointer" 
+                        title={layer}
+                        onClick={() => toggleLayer(layer)}
+                      >
+                        {layer}
+                      </span>
+                    </div>
+
+                    {/* Color Palette Accordion */}
+                    {pickingColorLayer === layer && (
+                       <div className="pl-9 pr-2 pb-3 pt-1 grid grid-cols-6 gap-2 bg-slate-900/50 rounded-b mb-2 animate-in fade-in slide-in-from-top-1 duration-200">
+                           {CAD_COLORS.map(color => (
+                               <button
+                                 key={color}
+                                 className="w-5 h-5 rounded-full border border-slate-600 hover:scale-110 hover:border-white transition-all ring-offset-1 ring-offset-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                 style={{ backgroundColor: color }}
+                                 title={color}
+                                 onClick={(e) => {
+                                     e.stopPropagation();
+                                     handleColorChange(layer, color);
+                                     setPickingColorLayer(null);
+                                 }}
+                               />
+                           ))}
+                       </div>
+                    )}
                 </div>
               ))}
             </div>
@@ -464,13 +575,22 @@ const App: React.FC = () => {
                   <Calculator size={14} className="mr-1"/> Beams
                 </Button>
                 <Button 
+                  onClick={calculateColumns} 
+                  disabled={!data || isLoading} 
+                  variant="primary" 
+                  className="w-full justify-center text-xs bg-amber-600 hover:bg-amber-700"
+                  title="Mark Columns"
+                >
+                  <Square size={14} className="mr-1"/> Columns
+                </Button>
+                <Button 
                   onClick={calculateWalls} 
                   disabled={!data || isLoading} 
                   variant="primary" 
                   className="w-full justify-center text-xs bg-slate-600 hover:bg-slate-700"
-                  title="Calculate Walls"
+                  title="Mark Walls"
                 >
-                  <Boxes size={14} className="mr-1"/> Walls
+                  <Box size={14} className="mr-1"/> Walls
                 </Button>
             </div>
 

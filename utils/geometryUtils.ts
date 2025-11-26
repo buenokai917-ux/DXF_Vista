@@ -1,4 +1,3 @@
-
 import { DxfEntity, EntityType, Point, Bounds } from '../types';
 
 export const distance = (p1: Point, p2: Point): number => {
@@ -32,6 +31,19 @@ export const distancePointToLine = (p: Point, lStart: Point, lEnd: Point): numbe
   const dx = p.x - xx;
   const dy = p.y - yy;
   return Math.sqrt(dx * dx + dy * dy);
+};
+
+// Calculates distance from point p to the infinite line passing through lStart and lEnd
+export const distancePointToInfiniteLine = (p: Point, lStart: Point, lEnd: Point): number => {
+  const A = lStart.y - lEnd.y;
+  const B = lEnd.x - lStart.x;
+  const C = -A * lStart.x - B * lStart.y;
+  
+  const numerator = Math.abs(A * p.x + B * p.y + C);
+  const denominator = Math.sqrt(A * A + B * B);
+  
+  if (denominator === 0) return distance(p, lStart);
+  return numerator / denominator;
 };
 
 export const getEntityBounds = (entity: DxfEntity): Bounds | null => {
@@ -225,14 +237,25 @@ const getRayIntersection = (start: Point, dir: Point, obstacles: DxfEntity[]): n
     return bestDist;
 };
 
+const parseBeamWidth = (text: string): number | null => {
+    // Matches patterns like "200x400", "200X400", "WLK10(5) 200x400"
+    // Capture group 1 is the width
+    const match = text.match(/(\d{3,})[xX×]\d+/);
+    if (match) {
+        return parseInt(match[1], 10);
+    }
+    return null;
+};
 
 // Reconstructs parallel lines into closed polygons (walls/beams)
 export const findParallelPolygons = (
     lines: DxfEntity[], 
-    tolerance = 600, 
+    tolerance = 1200, 
     resultLayer = 'CALC_LAYER', 
     obstacles: DxfEntity[] = [],
-    axisLines: DxfEntity[] = [] 
+    axisLines: DxfEntity[] = [],
+    textEntities: DxfEntity[] = [],
+    mode: 'BEAM' | 'WALL' = 'BEAM'
 ): DxfEntity[] => {
   const polygons: DxfEntity[] = [];
   const used = new Set<number>(); 
@@ -283,35 +306,92 @@ export const findParallelPolygons = (
 
     if (bestMatchIdx !== -1) {
         const l2 = lines.find((_, idx) => idx === bestMatchIdx);
-        let isValid = true;
+        let isValid = false; // Default to false, require validation
 
-        // Validation: Check for required AXIS line
-        if (axisLines.length > 0 && l2 && l2.start && l2.end) {
-            const pairCenter = {
-                x: (l1.start.x + l1.end.x + l2.start.x + l2.end.x) / 4,
-                y: (l1.start.y + l1.end.y + l2.start.y + l2.end.y) / 4
-            };
-            
-            const hasValidAxis = axisLines.some(axis => {
-                if (axis.type !== EntityType.LINE || !axis.start || !axis.end) return false;
-                
-                // 1. Distance check (Axis should be roughly inside the beam, so close to center)
-                const distToCenter = distancePointToLine(pairCenter, axis.start, axis.end);
-                if (distToCenter > 1000) return false; // Tolerance ~1m
+        if (l2 && l2.start && l2.end) {
+             const gap = minPerpDist;
+             
+             if (mode === 'WALL') {
+                 // --- WALL MODE ---
+                 // Relaxed rules: No axis check, no text check.
+                 // Walls are typically 100mm, 200mm, 240mm, 370mm, 400mm, 500mm
+                 if (gap >= 50 && gap <= 600) {
+                     isValid = true;
+                 }
+             } else {
+                 // --- BEAM MODE ---
+                 // 1. Check for Axis
+                 let foundAxis: DxfEntity | null = null;
 
-                // 2. Parallel check
-                const adx = axis.end.x - axis.start.x;
-                const ady = axis.end.y - axis.start.y;
-                const alen = Math.sqrt(adx*adx + ady*ady);
-                const l1len = Math.sqrt(v1.x*v1.x + v1.y*v1.y);
-                const dot = (v1.x * adx + v1.y * ady) / (l1len * alen);
-                
-                return Math.abs(dot) > 0.95;
-            });
+                 if (axisLines.length > 0) {
+                    const pairCenter = {
+                        x: (l1.start.x + l1.end.x + l2.start.x + l2.end.x) / 4,
+                        y: (l1.start.y + l1.end.y + l2.start.y + l2.end.y) / 4
+                    };
+                    
+                    foundAxis = axisLines.find(axis => {
+                        if (axis.type !== EntityType.LINE || !axis.start || !axis.end) return false;
+                        // Distance Check (Center of beam pair to axis line)
+                        const distToCenter = distancePointToLine(pairCenter, axis.start, axis.end);
+                        if (distToCenter > gap * 0.8) return false; // Axis should be roughly inside the gap
 
-            if (!hasValidAxis) {
-                isValid = false;
-            }
+                        // Parallel Check
+                        const adx = axis.end.x - axis.start.x;
+                        const ady = axis.end.y - axis.start.y;
+                        const alen = Math.sqrt(adx*adx + ady*ady);
+                        const l1len = Math.sqrt(v1.x*v1.x + v1.y*v1.y);
+                        const dot = (v1.x * adx + v1.y * ady) / (l1len * alen);
+                        return Math.abs(dot) > 0.95;
+                    }) || null;
+                 }
+
+                 if (foundAxis && foundAxis.start && foundAxis.end) {
+                     // CASE A: Axis Exists.
+                     // Strategy: Look for text annotation associated with this AXIS.
+                     // We treat the axis as infinite because annotation might be far away.
+                     let widthFromText: number | null = null;
+                     
+                     for (const txt of textEntities) {
+                         if (!txt.start || !txt.text) continue;
+                         
+                         // Check distance from Text to the INFINITE Axis line
+                         const distTextToAxis = distancePointToInfiniteLine(txt.start, foundAxis.start!, foundAxis.end!);
+                         
+                         // If text is within ~500mm of the axis line, consider it a candidate
+                         if (distTextToAxis < 500) {
+                             const w = parseBeamWidth(txt.text);
+                             if (w) {
+                                 widthFromText = w;
+                                 break; // Found a valid dimension on this axis
+                             }
+                         }
+                     }
+
+                     if (widthFromText) {
+                         // If text says "200", and gap is ~200, it's a match.
+                         if (Math.abs(gap - widthFromText) < 50) {
+                             isValid = true;
+                         } else {
+                             // Axis found, Text found, but Width mismatch -> Likely not the right beam lines for this text
+                             isValid = false; 
+                         }
+                     } else {
+                         // Axis found, but No Text found.
+                         // User rule: "200中间如果有轴线...没有轴线的话..." -> Implicitly, if axis exists, it's likely a beam.
+                         // We accept it even without text, assuming the axis implies structural intent.
+                         isValid = true;
+                     }
+
+                 } else {
+                     // CASE B: No Axis Found.
+                     // User rule: "没有轴线的话，就找宽度300以内来找梁"
+                     if (gap <= 300) {
+                         isValid = true;
+                     } else {
+                         isValid = false;
+                     }
+                 }
+             }
         }
 
         if (isValid && l2) {
