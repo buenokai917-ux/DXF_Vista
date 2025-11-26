@@ -56,10 +56,13 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
     setTransform({ k, x, y });
   }, [data, activeLayers]);
 
-  // Fit to screen on initial load or data change
+  // Fit to screen on initial load or data change only.
+  // We explicitly disable the exhaustive-deps rule here because we ONLY want to auto-fit
+  // when the file changes (data reference changes), NOT when activeLayers changes.
   useEffect(() => {
     fitToScreen();
-  }, [fitToScreen]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
 
   const handleWheel = (e: React.WheelEvent) => {
     if (!containerRef.current) return;

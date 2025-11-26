@@ -52,6 +52,7 @@ export const parseDxf = (dxfContent: string, encoding: string = 'utf-8'): DxfDat
   const lines = dxfContent.split(/\r\n|\r|\n/);
   const entities: DxfEntity[] = [];
   const blocks: Record<string, DxfEntity[]> = {};
+  const blockBasePoints: Record<string, Point> = {};
   const layers = new Set<string>();
 
   let section = 'NONE';
@@ -144,11 +145,22 @@ export const parseDxf = (dxfContent: string, encoding: string = 'utf-8'): DxfDat
                } else {
                    parseProperty(code, value, currentEntity, encoding);
                }
+           } else {
+              // Parse Block Definition Properties (e.g. Base Point)
+              const valNum = parseFloat(value);
+              if (code === 10) {
+                 if (!blockBasePoints[activeBlockName]) blockBasePoints[activeBlockName] = { x: 0, y: 0 };
+                 blockBasePoints[activeBlockName].x = valNum;
+              } else if (code === 20) {
+                 if (!blockBasePoints[activeBlockName]) blockBasePoints[activeBlockName] = { x: 0, y: 0 };
+                 blockBasePoints[activeBlockName].y = valNum;
+              }
            }
        } else {
            if (code === 2) {
                activeBlockName = value;
                blocks[activeBlockName] = [];
+               blockBasePoints[activeBlockName] = { x: 0, y: 0 };
            }
        }
     }
@@ -180,7 +192,8 @@ export const parseDxf = (dxfContent: string, encoding: string = 'utf-8'): DxfDat
   return {
     entities,
     layers: Array.from(layers).sort(),
-    blocks
+    blocks,
+    blockBasePoints
   };
 };
 

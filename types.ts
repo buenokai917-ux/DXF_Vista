@@ -39,6 +39,12 @@ export interface DxfEntity {
   rotation?: number; // Code 50
   hasAttributes?: boolean; // Code 66
 
+  // For MINSERT (Multiple Insert)
+  columnCount?: number; // Code 70
+  rowCount?: number;    // Code 71
+  columnSpacing?: number; // Code 44
+  rowSpacing?: number;    // Code 45
+
   // For Attrib
   invisible?: boolean; // Code 70 bit 1
 
@@ -53,6 +59,7 @@ export interface DxfData {
   entities: DxfEntity[];
   layers: string[];
   blocks: Record<string, DxfEntity[]>;
+  blockBasePoints: Record<string, Point>;
 }
 
 export interface Bounds {
