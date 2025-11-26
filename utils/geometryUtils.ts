@@ -527,18 +527,15 @@ export const calculateTotalBounds = (
     };
 
     const processEntity = (ent: DxfEntity, offsetX = 0, offsetY = 0, scaleX = 1, scaleY = 1, rotation = 0) => {
-       // If activeLayers is provided, skip layers not in the set
-       // Special case: If layer is '0', it might inherit, but usually we filter by explicit layer name
-       if (activeLayers && !activeLayers.has(ent.layer)) {
-           // However, Block Inserts themselves are on a layer. If the Insert is hidden, the block is hidden.
-           // But if Insert is visible, the entities inside might be on different layers.
-           // Simple approach: Only check root entities for layer visibility, or check inside?
-           // Standard CAD: Layer 0 in block inherits Insert layer. Other layers in block obey their own layer.
-           // For bounds calculation, we can just skip the top level check here if it's already filtered by caller, 
-           // BUT this function is recursive.
-           // Let's rely on the caller passing only visible entities OR check here.
-           // We will check here.
-           return; 
+       // --- Layer Visibility Check ---
+       // If activeLayers is provided, we typically skip layers not in the set.
+       // However, for nested entities (inside INSERTs), we must traverse the INSERT even if the INSERT's layer is hidden.
+       
+       const isLayerActive = !activeLayers || activeLayers.has(ent.layer);
+
+       // If layer is hidden, only skip if it is NOT a container (INSERT).
+       if (!isLayerActive && ent.type !== EntityType.INSERT) {
+           return;
        }
 
        const transformAndCheck = (localX: number, localY: number) => {
@@ -557,21 +554,27 @@ export const calculateTotalBounds = (
           checkPoint(tx + offsetX, ty + offsetY);
        };
 
-       if (ent.type === EntityType.LINE && ent.start && ent.end) {
-         transformAndCheck(ent.start.x, ent.start.y);
-         transformAndCheck(ent.end.x, ent.end.y);
-       } else if (ent.type === EntityType.LWPOLYLINE && ent.vertices) {
-         ent.vertices.forEach(v => transformAndCheck(v.x, v.y));
-       } else if ((ent.type === EntityType.CIRCLE || ent.type === EntityType.ARC) && ent.center && ent.radius) {
-         transformAndCheck(ent.center.x - ent.radius, ent.center.y - ent.radius);
-         transformAndCheck(ent.center.x + ent.radius, ent.center.y + ent.radius);
-       } else if ((ent.type === EntityType.TEXT || ent.type === EntityType.ATTRIB) && ent.start) {
-         transformAndCheck(ent.start.x, ent.start.y);
-       } else if (ent.type === EntityType.DIMENSION) {
-          if (ent.measureStart) transformAndCheck(ent.measureStart.x, ent.measureStart.y);
-          if (ent.measureEnd) transformAndCheck(ent.measureEnd.x, ent.measureEnd.y);
-          if (ent.end) transformAndCheck(ent.end.x, ent.end.y); 
-       } else if (ent.type === EntityType.INSERT && ent.start && ent.blockName && blocks[ent.blockName]) {
+       // Only process geometry if the layer is active
+       if (isLayerActive) {
+           if (ent.type === EntityType.LINE && ent.start && ent.end) {
+             transformAndCheck(ent.start.x, ent.start.y);
+             transformAndCheck(ent.end.x, ent.end.y);
+           } else if (ent.type === EntityType.LWPOLYLINE && ent.vertices) {
+             ent.vertices.forEach(v => transformAndCheck(v.x, v.y));
+           } else if ((ent.type === EntityType.CIRCLE || ent.type === EntityType.ARC) && ent.center && ent.radius) {
+             transformAndCheck(ent.center.x - ent.radius, ent.center.y - ent.radius);
+             transformAndCheck(ent.center.x + ent.radius, ent.center.y + ent.radius);
+           } else if ((ent.type === EntityType.TEXT || ent.type === EntityType.ATTRIB) && ent.start) {
+             transformAndCheck(ent.start.x, ent.start.y);
+           } else if (ent.type === EntityType.DIMENSION) {
+              if (ent.measureStart) transformAndCheck(ent.measureStart.x, ent.measureStart.y);
+              if (ent.measureEnd) transformAndCheck(ent.measureEnd.x, ent.measureEnd.y);
+              if (ent.end) transformAndCheck(ent.end.x, ent.end.y); 
+           }
+       }
+       
+       // Handle INSERT traversal (always check children, even if parent layer is inactive)
+       if (ent.type === EntityType.INSERT && ent.start && ent.blockName && blocks[ent.blockName]) {
           const subEntities = blocks[ent.blockName];
           let insLocalX = ent.start.x * scaleX;
           let insLocalY = ent.start.y * scaleY;
@@ -588,24 +591,58 @@ export const calculateTotalBounds = (
           const nextScaleY = scaleY * (ent.scale?.y || 1);
           const nextRotation = rotation + (ent.rotation || 0);
 
-          // For sub-entities inside a block, we must check THEIR layers too.
-          // Note: In standard CAD, if ent.layer is filtered out, we already returned.
-          // Now we iterate subEntities.
-          subEntities.forEach(sub => {
-              // Standard CAD logic: If sub-entity is on Layer '0', it treats it as being on `ent.layer` (the Insert layer)
-              // If sub-entity is on a specific layer (e.g. 'WALL'), it respects 'WALL' visibility.
-              
-              const effectiveLayer = sub.layer === '0' ? ent.layer : sub.layer;
-              if (activeLayers && !activeLayers.has(effectiveLayer)) return;
-              
-              // We pass a dummy object to processEntity to reuse logic, but without re-checking activeLayers 
-              // because we just checked the effective layer manually.
-              // Actually, simplest is to recursively call processEntity but we need to handle the Layer 0 logic.
-              // To avoid complex refactor, we just copy-paste the transform logic here? 
-              // No, let's just assume simple filtering for bounds.
-              
-              processEntity(sub, nextOffsetX, nextOffsetY, nextScaleX, nextScaleY, nextRotation);
-          });
+          // Handle MINSERT Grids
+          const rows = ent.rowCount || 1;
+          const cols = ent.columnCount || 1;
+          const rSpace = ent.rowSpacing || 0;
+          const cSpace = ent.columnSpacing || 0;
+
+          // Optimization: If single block, avoid loops
+          if (rows === 1 && cols === 1) {
+              subEntities.forEach(sub => {
+                  const effectiveLayer = sub.layer === '0' ? ent.layer : sub.layer;
+                  
+                  // Same check: If layer is hidden, only skip if NOT insert
+                  const isSubActive = !activeLayers || activeLayers.has(effectiveLayer);
+                  if (!isSubActive && sub.type !== EntityType.INSERT) return;
+
+                  processEntity(sub, nextOffsetX, nextOffsetY, nextScaleX, nextScaleY, nextRotation);
+              });
+          } else {
+              // MINSERT Grid
+              for (let r = 0; r < rows; r++) {
+                  for (let c = 0; c < cols; c++) {
+                      // Calculate Grid Offset
+                      let gridX = c * cSpace;
+                      let gridY = r * rSpace;
+                      
+                      // Rotate grid offset based on block rotation
+                      let rGridX = gridX * scaleX; 
+                      let rGridY = gridY * scaleY;
+
+                      if (ent.rotation) {
+                          const rad = ent.rotation * Math.PI / 180;
+                          const cos = Math.cos(rad);
+                          const sin = Math.sin(rad);
+                          const tx = rGridX * cos - rGridY * sin;
+                          const ty = rGridX * sin + rGridY * cos;
+                          rGridX = tx;
+                          rGridY = ty;
+                      }
+
+                      const finalOffsetX = nextOffsetX + rGridX;
+                      const finalOffsetY = nextOffsetY + rGridY;
+
+                      subEntities.forEach(sub => {
+                          const effectiveLayer = sub.layer === '0' ? ent.layer : sub.layer;
+                          const isSubActive = !activeLayers || activeLayers.has(effectiveLayer);
+                          if (!isSubActive && sub.type !== EntityType.INSERT) return;
+
+                          processEntity(sub, finalOffsetX, finalOffsetY, nextScaleX, nextScaleY, nextRotation);
+                      });
+                  }
+              }
+          }
        }
     };
 
