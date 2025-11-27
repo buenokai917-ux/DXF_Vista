@@ -288,6 +288,26 @@ const App: React.FC = () => {
         textEntities = findEntitiesInAllProjects(/梁筋/).filter(e => e.type === EntityType.TEXT);
     }
 
+    // --- NEW LOGIC: Extract Valid Beam Widths from Text ---
+    const validWidths = new Set<number>();
+    textEntities.forEach(t => {
+        if (!t.text) return;
+        // Regex to match "Width x Height" e.g., 200x500, 240X600. 
+        // Handles multiline (splits by line breaks implicitly via match or we can split explicitly)
+        // Matches number + [xX] + number. We capture the first number (width).
+        const matches = t.text.match(/(\d+)[xX×]\d+/);
+        if (matches) {
+            const w = parseInt(matches[1], 10);
+            if (!isNaN(w) && w > 0) {
+                validWidths.add(w);
+            }
+        }
+    });
+    
+    // Debug info
+    const foundWidthsArray = Array.from(validWidths).sort((a,b) => a-b);
+    console.log("Found valid beam widths:", foundWidthsArray);
+    
     const resultLayer = 'BEAM_CALC';
     const contextLayers = ['WALL', 'COLU', 'AXIS', ...beamTextLayers];
 
@@ -295,7 +315,8 @@ const App: React.FC = () => {
     const lines = entities.filter(e => e.type === EntityType.LINE);
     const polylines = entities.filter(e => e.type === EntityType.LWPOLYLINE && e.closed);
 
-    const generatedPolygons = findParallelPolygons(lines, 1200, resultLayer, obstacles, axisEntities, textEntities, 'BEAM');
+    // Pass validWidths to the algorithm
+    const generatedPolygons = findParallelPolygons(lines, 1200, resultLayer, obstacles, axisEntities, textEntities, 'BEAM', validWidths);
     const existingPolygons = polylines.map(p => ({ ...p, layer: resultLayer }));
 
     const allBeams = [...generatedPolygons, ...existingPolygons];
@@ -319,12 +340,18 @@ const App: React.FC = () => {
     });
 
     if (newEntities.length === 0) {
-        alert("No calculable beams found. (Note: Valid beams require pairs of lines).");
+        alert("No calculable beams found. (Note: Valid beams require pairs of lines matching text annotations like '200x500').");
         return;
     }
 
-    updateActiveProjectData(resultLayer, newEntities, '#00FF00', contextLayers, false);
-    alert(`Calculated ${allBeams.length} beam segments on '${activeProject.name}'.`);
+    // ENABLE FILL for beams
+    updateActiveProjectData(resultLayer, newEntities, '#00FF00', contextLayers, true);
+    
+    let msg = `Calculated ${allBeams.length} beam segments.`;
+    if (validWidths.size > 0) {
+        msg += `\nUsed widths: ${foundWidthsArray.join(', ')}`;
+    }
+    alert(msg);
   };
 
   const calculateWalls = () => {
@@ -356,7 +383,6 @@ const App: React.FC = () => {
         const otherAxis = findEntitiesInAllProjects(/^AXIS$/i);
         otherAxis.forEach(ent => {
              if (ent.type === EntityType.LINE) axisLines.push(ent);
-             // Note: Deep recursion for other projects' polylines is omitted for brevity, but main project is covered.
         });
     }
 
@@ -430,7 +456,8 @@ const App: React.FC = () => {
         return;
     }
 
-    updateActiveProjectData(resultLayer, columnEntities, '#f59e0b', contextLayers, false);
+    // ENABLE FILL for columns
+    updateActiveProjectData(resultLayer, columnEntities, '#f59e0b', contextLayers, true);
     alert(`Marked ${columnEntities.length} columns.`);
   };
 

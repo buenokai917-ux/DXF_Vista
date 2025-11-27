@@ -203,8 +203,12 @@ const rayIntersectsBox = (start: Point, dir: Point, box: Bounds): number => {
     if (tmax < tmin) return Infinity;
     if (tmax < 0) return Infinity; // Box is fully behind
 
-    // If start is inside the box (tmin < 0), return exit point (tmax)
-    // This allows walls starting inside another wall (e.g. at axis) to snap to the far side
+    // Standard Raycasting behavior: 
+    // If start is inside the box (tmin < 0), return tmax (exit distance) is dangerous for snapping logic
+    // unless we specifically want to extend through.
+    // However, for walls starting inside columns/axes, we DO want to report the exit distance 
+    // so we can "trim" back or extend forward to the boundary.
+    // For now, returning tmax when inside helps capture the boundary.
     if (tmin < 0) return tmax;
 
     return tmin; // Returns entry point
@@ -227,14 +231,6 @@ const getRayIntersection = (start: Point, dir: Point, obstacles: DxfEntity[]): n
         }
     }
     return bestDist;
-};
-
-const parseBeamWidth = (text: string): number | null => {
-    const match = text.match(/(\d{3,})[xX×]\d+/);
-    if (match) {
-        return parseInt(match[1], 10);
-    }
-    return null;
 };
 
 const hasAxisBetween = (l1: DxfEntity, l2: DxfEntity, axisLines: DxfEntity[], gap: number): boolean => {
@@ -293,7 +289,8 @@ export const findParallelPolygons = (
     obstacles: DxfEntity[] = [],
     axisLines: DxfEntity[] = [],
     textEntities: DxfEntity[] = [],
-    mode: 'BEAM' | 'WALL' = 'BEAM'
+    mode: 'BEAM' | 'WALL' = 'BEAM',
+    validWidths: Set<number> = new Set()
 ): DxfEntity[] => {
   const polygons: DxfEntity[] = [];
   const used = new Set<number>(); 
@@ -309,8 +306,6 @@ export const findParallelPolygons = (
     const v1 = { x: l1.end.x - l1.start.x, y: l1.end.y - l1.start.y };
     
     // ONE-TO-MANY MATCHING SUPPORT:
-    // We scan ALL other lines. If l1 is parallel to multiple segments (e.g. wall with openings),
-    // we create polygons for ALL of them. This is crucial for fixing missing wall sections.
     for (let idxB = idxA + 1; idxB < sortedLines.length; idxB++) {
        const { l: l2, i: j, len: len2 } = sortedLines[idxB];
        if (used.has(j)) continue;
@@ -348,49 +343,26 @@ export const findParallelPolygons = (
        const gap = dist;
 
        if (mode === 'WALL') {
-             // For Walls, verify Axis exists strictly between the pair
              const axisFound = hasAxisBetween(l1, l2, axisLines, gap);
              if (axisFound) {
                  isValid = true;
              }
        } else {
-             // BEAM MODE
-             let foundAxis: DxfEntity | null = null;
-             if (axisLines.length > 0) {
-                const pairCenter = {
-                    x: (l1.start.x + l1.end.x + l2.start.x + l2.end.x) / 4,
-                    y: (l1.start.y + l1.end.y + l2.start.y + l2.end.y) / 4
-                };
-                foundAxis = axisLines.find(axis => {
-                    if (axis.type !== EntityType.LINE || !axis.start || !axis.end) return false;
-                    const distToCenter = distancePointToLine(pairCenter, axis.start, axis.end);
-                    if (distToCenter > gap * 0.8) return false; 
-                    const adx = axis.end.x - axis.start.x;
-                    const ady = axis.end.y - axis.start.y;
-                    const alen = Math.sqrt(adx*adx + ady*ady);
-                    const l1len = Math.sqrt(v1.x*v1.x + v1.y*v1.y);
-                    const dot = (v1.x * adx + v1.y * ady) / (l1len * alen);
-                    return Math.abs(dot) > 0.95;
-                }) || null;
-             }
-
-             if (foundAxis) {
-                 let widthFromText: number | null = null;
-                 for (const txt of textEntities) {
-                     if (!txt.start || !txt.text) continue;
-                     const distTextToAxis = distancePointToInfiniteLine(txt.start, foundAxis.start!, foundAxis.end!);
-                     if (distTextToAxis < 500) {
-                         const w = parseBeamWidth(txt.text);
-                         if (w) { widthFromText = w; break; }
+             // BEAM MODE logic...
+             // STRICT VALIDATION based on extracted text widths
+             if (validWidths.size > 0) {
+                 // If we found width text annotations, ONLY accept lines that match those widths
+                 // Gap must be equal to one of the valid widths (+- 2.5mm tolerance)
+                 for (const w of validWidths) {
+                     if (Math.abs(gap - w) <= 2.5) {
+                         isValid = true;
+                         break;
                      }
                  }
-                 if (widthFromText) {
-                     if (Math.abs(gap - widthFromText) < 50) isValid = true;
-                 } else {
-                     isValid = true;
-                 }
              } else {
-                 if (gap <= 300) isValid = true;
+                 // Fallback if no text annotations found
+                 // Use generic reasonable beam widths
+                 if (gap >= 100 && gap <= 1000) isValid = true; 
              }
        }
 
@@ -403,7 +375,6 @@ export const findParallelPolygons = (
        }
     }
     
-    // Mark primary line as used after checking all possible secondary matches
     used.add(i);
   }
   return polygons;
@@ -485,6 +456,7 @@ const createPolygonFromPair = (
         const startDiff = tMinOverlap - tMinUnion;
         const endDiff = tMaxUnion - tMaxOverlap;
 
+        // Try to extend to Union (fill corners)
         if (startDiff > 0 && startDiff < cornerTolerance) finalStartT = tMinUnion;
         else finalStartT = tMinOverlap;
 

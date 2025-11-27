@@ -40,67 +40,8 @@ export const renderDxfToCanvas = ({
         ctxToUse.lineJoin = 'round';
     };
 
-    // 3. Separate Entities into "Fills" (Walls) and "Strokes" (Everything else)
-    const filledEntities: { ent: DxfEntity, color: string, layer: string }[] = [];
-    const strokeEntities: { ent: DxfEntity, color: string, layer: string, lineWidth: number }[] = [];
-
     const targetPixelWidth = isPdfExport ? 2 : 1;
     const baseLineWidth = targetPixelWidth / transform.k;
-
-    const processEntity = (ent: DxfEntity, contextLayer: string, accumulatedScale: number, rotation: number, offset: {x:number, y:number}) => {
-       if (ent.type === EntityType.ATTRIB && ent.invisible) return;
-       if (!Number.isFinite(accumulatedScale) || accumulatedScale === 0) return;
-
-       const effectiveLayer = ent.layer === '0' ? contextLayer : ent.layer;
-       const isLayerActive = activeLayers.has(effectiveLayer);
-
-       if (!isLayerActive && ent.type !== EntityType.INSERT) return;
-
-       if (ent.type === EntityType.INSERT && ent.start && ent.blockName && data.blocks[ent.blockName]) {
-           const blockEnts = data.blocks[ent.blockName];
-           const basePoint = data.blockBasePoints[ent.blockName!] || { x: 0, y: 0 };
-           
-           const rows = ent.rowCount || 1;
-           const cols = ent.columnCount || 1;
-           const rSpace = ent.rowSpacing || 0;
-           const cSpace = ent.columnSpacing || 0;
-           
-           const scaleX = ent.scale?.x || 1;
-           const scaleY = ent.scale?.y || 1;
-           const blkRot = ent.rotation || 0;
-
-           const nextScale = accumulatedScale * Math.abs(scaleX); // Simplified scale tracking
-           const nextRot = rotation + blkRot;
-
-           for (let r = 0; r < rows; r++) {
-               for (let c = 0; c < cols; c++) {
-                   // Calculate grid position in Local Block Space
-                   const gridX = c * cSpace;
-                   const gridY = r * rSpace;
-
-                   // Transform grid pos by Block Rotation
-                   const rad = blkRot * Math.PI / 180;
-                   const rx = gridX * Math.cos(rad) - gridY * Math.sin(rad);
-                   const ry = gridX * Math.sin(rad) + gridY * Math.cos(rad);
-
-                   // Block Insertion Point in Parent Space
-                   const insX = ent.start!.x;
-                   const insY = ent.start!.y;
-
-                   // Apply Parent Rotation/Scale/Offset to the Insertion Point + Grid Offset
-                   // NOTE: We recursively pass transform down, so we just need to pass the accumulation.
-                   // Actually, for flattened recursion without matrix stack, it's easier to recurse logic.
-                   // But here we are building a flat list. 
-                   
-                   // To keep it simple in this specific refactor without full matrix math, 
-                   // we will use the Recursive Draw approach directly on the Canvas Contexts 
-                   // instead of pre-calculating flattened coordinates. 
-                   // So we abort this "Flattening" strategy and go back to recursive drawing, 
-                   // but splitting the passes.
-               }
-           }
-       }
-    };
 
     // 4. Color Logic
     const getColor = (layer: string) => {
@@ -166,6 +107,11 @@ export const renderDxfToCanvas = ({
                     }
                     currCtx.closePath();
                     currCtx.fill();
+                } else if (ent.type === EntityType.CIRCLE && ent.center && ent.radius) {
+                    currCtx.fillStyle = getColor(effectiveLayer);
+                    currCtx.beginPath();
+                    currCtx.arc(ent.center.x, ent.center.y, ent.radius, 0, 2 * Math.PI);
+                    currCtx.fill();
                 }
             }
         }
@@ -176,6 +122,8 @@ export const renderDxfToCanvas = ({
         for (const ent of entities) {
             const effectiveLayer = ent.layer === '0' ? contextLayer : ent.layer;
             const isLayerActive = activeLayers.has(effectiveLayer);
+            
+            // Allow strokes for all active layers (even filled ones) to ensure outlines (rectangles) are visible for beams/columns
 
             if (ent.type === EntityType.INSERT && ent.start && ent.blockName && data.blocks[ent.blockName]) {
                  const basePoint = data.blockBasePoints[ent.blockName] || { x: 0, y: 0 };
@@ -227,7 +175,6 @@ export const renderDxfToCanvas = ({
                 }
                 if (ent.closed) currCtx.closePath();
                 currCtx.stroke();
-                // Note: We do NOT fill here. Fills are handled in the Fill Pass.
             }
             else if (ent.type === EntityType.CIRCLE && ent.center && ent.radius) {
                 currCtx.arc(ent.center.x, ent.center.y, ent.radius, 0, 2 * Math.PI);
