@@ -2,11 +2,11 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { jsPDF } from 'jspdf';
 import { parseDxf } from './utils/dxfParser';
 import { DxfData, LayerColors, DxfEntity, EntityType, Point } from './types';
-import { getBeamProperties, getCenter, transformPoint, findParallelPolygons, calculateLength, calculateTotalBounds } from './utils/geometryUtils';
+import { getBeamProperties, getCenter, transformPoint, findParallelPolygons, calculateLength, calculateTotalBounds, groupEntitiesByProximity, findTitleForBounds } from './utils/geometryUtils';
 import { Viewer } from './components/Viewer';
 import { Button } from './components/Button';
 import { renderDxfToCanvas } from './utils/renderUtils';
-import { Upload, Layers, Download, Image as ImageIcon, FileText, Settings, X, RefreshCw, Globe, Search, Calculator, Square, Box, Plus, File as FileIcon } from 'lucide-react';
+import { Upload, Layers, Download, Image as ImageIcon, FileText, Settings, X, RefreshCw, Globe, Search, Calculator, Square, Box, Plus, File as FileIcon, Grid } from 'lucide-react';
 
 // Standard CAD Colors (Index 1-7 + Grays + Common)
 const CAD_COLORS = [
@@ -302,9 +302,7 @@ const App: React.FC = () => {
         }
     });
     
-    // Debug info
     const foundWidthsArray = Array.from(validWidths).sort((a,b) => a-b);
-    console.log("Found valid beam widths:", foundWidthsArray);
     
     const resultLayer = 'BEAM_CALC';
     const contextLayers = ['WALL', 'COLU', 'AXIS', ...beamTextLayers];
@@ -376,7 +374,6 @@ const App: React.FC = () => {
         }
     });
     
-    // Fallback to other projects if none found
     if (axisLines.length === 0) {
         const otherAxis = findEntitiesInAllProjects(/^AXIS$/i);
         otherAxis.forEach(ent => {
@@ -397,7 +394,6 @@ const App: React.FC = () => {
         if (ent.type === EntityType.LWPOLYLINE && ent.closed && ent.vertices && ent.vertices.length > 2) {
              existingClosedPolygons.push({ ...ent, layer: resultLayer });
         } else {
-             // Otherwise, gather Lines and Explode Open Polylines for pairing analysis
              if (ent.type === EntityType.LINE && ent.start && ent.end) {
                  candidateLines.push(ent);
              } else if (ent.type === EntityType.LWPOLYLINE && ent.vertices && ent.vertices.length > 1) {
@@ -421,7 +417,6 @@ const App: React.FC = () => {
 
     const generatedWalls = findParallelPolygons(candidateLines, 600, resultLayer, allObstacles, axisLines, [], 'WALL');
     
-    // Combine algorithmically generated rectangles AND preserved irregular shapes
     const newEntities: DxfEntity[] = [...generatedWalls, ...existingClosedPolygons];
 
     if (newEntities.length === 0) {
@@ -457,6 +452,71 @@ const App: React.FC = () => {
     // ENABLE FILL for columns
     updateActiveProjectData(resultLayer, columnEntities, '#f59e0b', contextLayers, true);
     alert(`Marked ${columnEntities.length} columns.`);
+  };
+
+  const calculateSplitRegions = () => {
+      if (!activeProject) return;
+      const resultLayer = 'VIEWPORT_CALC';
+
+      // 1. Extract AXIS lines for clustering
+      // Extract from all layers containing 'AXIS' (case-insensitive)
+      const axisLayers = activeProject.data.layers.filter(l => l.toUpperCase().includes('AXIS'));
+      const axisLines = extractEntities(axisLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
+          .filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
+
+      if (axisLines.length === 0) {
+          alert("No AXIS lines found to determine regions.");
+          return;
+      }
+
+      // 2. Extract potential title Text and Lines (excluding AXIS text for title search, maintaining safe exclusion)
+      const allText = extractEntities(activeProject.data.layers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
+          .filter(e => e.type === EntityType.TEXT && !e.layer.toUpperCase().includes('AXIS'));
+      
+      const allLines = extractEntities(activeProject.data.layers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
+          .filter(e => e.type === EntityType.LINE);
+
+      // 3. Cluster Axis lines
+      const clusters = groupEntitiesByProximity(axisLines, 5000); // 5000mm tolerance for grouping
+      
+      const newEntities: DxfEntity[] = [];
+
+      clusters.forEach((box, i) => {
+          // Find Title
+          const title = findTitleForBounds(box, allText, allLines);
+          const label = title || `BLOCK ${i + 1}`;
+
+          // Create Rectangle
+          const rect: DxfEntity = {
+              type: EntityType.LWPOLYLINE,
+              layer: resultLayer,
+              closed: true,
+              vertices: [
+                  { x: box.minX, y: box.minY },
+                  { x: box.maxX, y: box.minY },
+                  { x: box.maxX, y: box.maxY },
+                  { x: box.minX, y: box.maxY }
+              ]
+          };
+          newEntities.push(rect);
+
+          // Create Label Text (Top Left corner of box)
+          newEntities.push({
+              type: EntityType.TEXT,
+              layer: resultLayer,
+              text: label,
+              start: { x: box.minX, y: box.maxY + 500 },
+              radius: 1000 // Large text
+          });
+      });
+
+      if (newEntities.length === 0) {
+          alert("Could not determine split regions.");
+          return;
+      }
+
+      updateActiveProjectData(resultLayer, newEntities, '#FF00FF', ['AXIS'], false);
+      alert(`Found ${clusters.length} regions.`);
   };
 
   const updateActiveProjectData = (resultLayer: string, newEntities: DxfEntity[], color: string, contextLayers: string[], fillLayer: boolean) => {
@@ -802,6 +862,15 @@ const App: React.FC = () => {
                   title="Mark Walls"
                 >
                   <Box size={14} className="mr-1"/> Walls
+                </Button>
+                <Button 
+                  onClick={calculateSplitRegions} 
+                  disabled={!activeProject || isLoading} 
+                  variant="primary" 
+                  className="w-full justify-center text-xs bg-purple-600 hover:bg-purple-700"
+                  title="Split View / Identify Blocks"
+                >
+                  <Grid size={14} className="mr-1"/> Split View
                 </Button>
             </div>
 

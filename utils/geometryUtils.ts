@@ -64,7 +64,16 @@ export const getEntityBounds = (entity: DxfEntity): Bounds | null => {
     update({ x: entity.center.x - entity.radius, y: entity.center.y - entity.radius });
     update({ x: entity.center.x + entity.radius, y: entity.center.y + entity.radius });
   } else if ((entity.type === EntityType.TEXT || entity.type === EntityType.INSERT) && entity.start) {
+    // Basic point bounds for text/insert if full geometry not available
     update(entity.start);
+    // Rough estimate for text bounds if not provided
+    if (entity.type === EntityType.TEXT && entity.text && entity.radius) {
+         // radius acts as height for TEXT
+         const h = entity.radius;
+         const w = entity.text.length * h * 0.6; 
+         // Assume horizontal for bound estimation
+         update({ x: entity.start.x + w, y: entity.start.y + h });
+    }
   } else if (entity.type === EntityType.DIMENSION) {
       if (entity.measureStart) update(entity.measureStart);
       if (entity.measureEnd) update(entity.measureEnd);
@@ -201,10 +210,11 @@ const rayIntersectsBox = (start: Point, dir: Point, box: Bounds): number => {
     }
 
     if (tmax < tmin) return Infinity;
-    if (tmax < 0) return Infinity; // Box is fully behind
+    
+    // Standard logic: if tmin < 0 (inside), return tmax (exit)
+    // This allows walls starting inside other boxes to be registered
+    if (tmin < 0) return tmax;
 
-    // Standard Raycasting behavior: 
-    // If start is inside the box (tmin < 0), return tmin.
     return tmin; 
 };
 
@@ -342,13 +352,11 @@ export const findParallelPolygons = (
 
     const v1 = { x: l1.end.x - l1.start.x, y: l1.end.y - l1.start.y };
     
-    // ONE-TO-MANY MATCHING SUPPORT:
     for (let idxB = idxA + 1; idxB < sortedLines.length; idxB++) {
        const { l: l2, i: j, len: len2 } = sortedLines[idxB];
        if (used.has(j)) continue;
        if (l2.type !== EntityType.LINE || !l2.start || !l2.end) continue;
 
-       // If lengths are too mismatched and small, skip, but allow long matching short
        if (Math.min(len1, len2) < 200) continue; 
 
        const v2 = { x: l2.end.x - l2.start.x, y: l2.end.y - l2.start.y };
@@ -360,7 +368,6 @@ export const findParallelPolygons = (
 
        if (dist > tolerance || dist < 10) continue; 
 
-       // Calculate Intersection/Overlap
        const u = { x: v1.x/len1, y: v1.y/len1 };
        const getT = (p: Point) => (p.x - l1.start!.x) * u.x + (p.y - l1.start!.y) * u.y;
        
@@ -369,7 +376,6 @@ export const findParallelPolygons = (
        const tMinB = Math.min(tB1, tB2);
        const tMaxB = Math.max(tB1, tB2);
        
-       // Check overlap with l1 segment (0 to len1)
        const overlapMin = Math.max(0, tMinB);
        const overlapMax = Math.min(len1, tMaxB);
        const overlapLen = overlapMax - overlapMin;
@@ -385,7 +391,6 @@ export const findParallelPolygons = (
                  isValid = true;
              }
        } else {
-             // BEAM MODE logic...
              if (validWidths.size > 0) {
                  for (const w of validWidths) {
                      if (Math.abs(gap - w) <= 2.5) {
@@ -402,11 +407,10 @@ export const findParallelPolygons = (
             const resultEntities = createPolygonFromPair(l1, l2, resultLayer, obstacles, mode, gap);
             if (resultEntities.length > 0) {
                 polygons.push(...resultEntities);
-                used.add(j); // Mark secondary line as used
+                used.add(j); 
             }
        }
     }
-    
     used.add(i);
   }
   return polygons;
@@ -434,11 +438,9 @@ const createPolygonFromPair = (
     const tB1 = getT(l2.start);
     const tB2 = getT(l2.end);
 
-    // Overlap range
     const tMinOverlap = Math.max(Math.min(tA1, tA2), Math.min(tB1, tB2));
     const tMaxOverlap = Math.min(Math.max(tA1, tA2), Math.max(tB1, tB2));
 
-    // Union range
     const tMinUnion = Math.min(Math.min(tA1, tA2), Math.min(tB1, tB2));
     const tMaxUnion = Math.max(Math.max(tA1, tA2), Math.max(tB1, tB2));
 
@@ -448,21 +450,12 @@ const createPolygonFromPair = (
     const vPerp = { x: l2.start.x - projL2Start.x, y: l2.start.y - projL2Start.y };
 
     if (mode === 'BEAM') {
-        // Boolean Subtraction Logic for Beams
-        // Instead of raycasting from center, we check the full length and subtract obstacles
-        
         const blockers: [number, number][] = [];
-        const beamWidth = gap;
-        // The beam occupies lateral space from 0 to |vPerp| (gap).
-        // vPerp is the vector from Line 1 to Line 2. 
-        // We project obstacles onto vPerp to see if they block this corridor.
         
         for (const obs of obstacles) {
              const bounds = getEntityBounds(obs);
              if (!bounds) continue;
              
-             // Simple AABB overlap check first? 
-             // Project Bounds corners onto u and vPerp
              const corners = [
                  {x: bounds.minX, y: bounds.minY},
                  {x: bounds.maxX, y: bounds.minY},
@@ -477,7 +470,6 @@ const createPolygonFromPair = (
                  const relX = c.x - l1.start!.x;
                  const relY = c.y - l1.start!.y;
                  const tU = relX * u.x + relY * u.y;
-                 // Project onto normalized vPerp
                  const nV = { x: vPerp.x/gap, y: vPerp.y/gap };
                  const tV = relX * nV.x + relY * nV.y;
                  
@@ -487,8 +479,6 @@ const createPolygonFromPair = (
                  maxV = Math.max(maxV, tV);
              }
              
-             // Beam lateral range is [0, gap] (or [gap, 0] depending on direction, but vPerp length is gap)
-             // Check lateral overlap. Overlap must be significant (e.g. > 10mm)
              const beamVMin = 0;
              const beamVMax = gap;
              
@@ -496,15 +486,11 @@ const createPolygonFromPair = (
              const latOverlapEnd = Math.min(maxV, beamVMax);
              
              if (latOverlapEnd - latOverlapStart > 10) {
-                 // It blocks! Record the longitudinal interval
                  blockers.push([minU, maxU]);
              }
         }
         
         const mergedBlockers = mergeIntervals(blockers);
-        // Subtract blockers from the full Union range
-        // Note: Beams typically span between columns. The CAD lines might go through.
-        // We take the full union as candidate.
         const validIntervals = subtractIntervals(tMinUnion, tMaxUnion, mergedBlockers);
         
         const results: DxfEntity[] = [];
@@ -513,7 +499,6 @@ const createPolygonFromPair = (
             const startT = interval[0];
             const endT = interval[1];
             
-            // Filter short fragments
             if (endT - startT < 200) continue; 
             
             const pStartBase = { x: l1.start.x + u.x * startT, y: l1.start.y + u.y * startT };
@@ -535,7 +520,6 @@ const createPolygonFromPair = (
         return results;
 
     } else {
-        // WALL Mode - Keep existing logic (Trim/Extend), wrap in array
         let finalStartT = tMinOverlap;
         let finalEndT = tMaxOverlap;
 
@@ -549,10 +533,9 @@ const createPolygonFromPair = (
         if (endDiff > 0 && endDiff < cornerTolerance) finalEndT = tMaxUnion;
         else finalEndT = tMaxOverlap;
 
-        // Snapping / Raycasting for Walls
         const SNAP_TOLERANCE = gap * 1.5;
 
-        // Shoot ray from the END
+        // Trim/Extend Logic
         const endCenter = { 
             x: l1.start.x + u.x * finalEndT + vPerp.x * 0.5,
             y: l1.start.y + u.y * finalEndT + vPerp.y * 0.5
@@ -562,7 +545,6 @@ const createPolygonFromPair = (
              finalEndT = finalEndT + distFwd;
         }
 
-        // Shoot ray from the START
         const startCenter = { 
             x: l1.start.x + u.x * finalStartT + vPerp.x * 0.5,
             y: l1.start.y + u.y * finalStartT + vPerp.y * 0.5
@@ -709,4 +691,157 @@ export const calculateTotalBounds = (
     entities.forEach(ent => processEntity(ent));
     if (!hasEntities) return { minX: 0, minY: 0, maxX: 100, maxY: 100 };
     return { minX, minY, maxX, maxY };
+};
+
+// --- VIEWPORT SEGMENTATION HELPERS ---
+
+export const groupEntitiesByProximity = (entities: DxfEntity[], tolerance = 5000): Bounds[] => {
+    // 1. Convert each entity to a Bounding Box
+    const boxes: Bounds[] = [];
+    entities.forEach(e => {
+        const b = getEntityBounds(e);
+        if (b) boxes.push(b);
+    });
+
+    if (boxes.length === 0) return [];
+
+    // 2. Cluster boxes using Union-Find or simple iterative merging
+    // Since we expect a few major clusters (Buildings), iterative merge is fine.
+    let clusters = boxes;
+    let changed = true;
+
+    while (changed) {
+        changed = false;
+        const newClusters: Bounds[] = [];
+        const merged = new Set<number>();
+
+        for (let i = 0; i < clusters.length; i++) {
+            if (merged.has(i)) continue;
+            let current = clusters[i];
+            
+            for (let j = i + 1; j < clusters.length; j++) {
+                if (merged.has(j)) continue;
+                const other = clusters[j];
+
+                // Check intersection with tolerance (Expansion)
+                const intersects = !(
+                    other.minX > current.maxX + tolerance ||
+                    other.maxX < current.minX - tolerance ||
+                    other.minY > current.maxY + tolerance ||
+                    other.maxY < current.minY - tolerance
+                );
+
+                if (intersects) {
+                    // Merge
+                    current = {
+                        minX: Math.min(current.minX, other.minX),
+                        minY: Math.min(current.minY, other.minY),
+                        maxX: Math.max(current.maxX, other.maxX),
+                        maxY: Math.max(current.maxY, other.maxY)
+                    };
+                    merged.add(j);
+                    changed = true;
+                }
+            }
+            newClusters.push(current);
+        }
+        clusters = newClusters;
+    }
+    return clusters;
+};
+
+export const findTitleForBounds = (
+    box: Bounds, 
+    texts: DxfEntity[], 
+    lines: DxfEntity[], 
+    maxMargin = 25000 
+): string | null => {
+    // Search in expanding rings to find the *nearest* title
+    const step = 500; // Step size in CAD units (mm)
+    
+    for (let currentMargin = 0; currentMargin <= maxMargin; currentMargin += step) {
+        const innerMargin = Math.max(0, currentMargin - step);
+        
+        const outerBox = {
+            minX: box.minX - currentMargin,
+            minY: box.minY - currentMargin,
+            maxX: box.maxX + currentMargin,
+            maxY: box.maxY + currentMargin
+        };
+        
+        const innerBox = {
+             minX: box.minX - innerMargin,
+             minY: box.minY - innerMargin,
+             maxX: box.maxX + innerMargin,
+             maxY: box.maxY + innerMargin
+        };
+
+        const candidates = texts.filter(t => {
+            if (!t.start || !t.text) return false;
+            
+            // Check if inside outer ring
+            if (t.start.x < outerBox.minX || t.start.x > outerBox.maxX ||
+                t.start.y < outerBox.minY || t.start.y > outerBox.maxY) return false;
+
+            // Check if outside inner ring (optimization to check only new area)
+            if (currentMargin > 0) {
+                 if (t.start.x >= innerBox.minX && t.start.x <= innerBox.maxX &&
+                     t.start.y >= innerBox.minY && t.start.y <= innerBox.maxY) return false;
+            }
+
+            // Exclude unwanted layers (Standard practice: Grid IDs and Dimensions are not titles)
+            if (t.layer.toUpperCase().includes('AXIS') || t.layer.toUpperCase().includes('DIM')) return false;
+
+            // Exclude Numeric / Dimensions (e.g. "200", "200x500", "3.60")
+            // Regex matches strings that are purely numbers, whitespace, or math/dimension symbols
+            if (/^[\d\s,.xX*×+-=]+$/.test(t.text)) return false;
+
+            return true;
+        });
+
+        const validTitles: DxfEntity[] = [];
+
+        for (const txt of candidates) {
+            const h = txt.radius || 300; 
+            const w = (txt.text!.length) * h * 0.7;
+            const txtBounds = {
+                minX: txt.start!.x,
+                maxX: txt.start!.x + w,
+                minY: txt.start!.y,
+                maxY: txt.start!.y + h
+            };
+
+            // Check for Underline
+            const hasUnderline = lines.some(l => {
+                if (!l.start || !l.end) return false;
+                if (Math.abs(l.start.y - l.end.y) > h * 0.5) return false; // Not horizontal
+                
+                const lineY = (l.start.y + l.end.y) / 2;
+                const verticalGap = txtBounds.minY - lineY; // Distance from Text Bottom to Line
+                
+                // Requirement: Line must be BELOW the text (gap > 0)
+                // and distance must be between 0 and 0.5 times the text height.
+                if (verticalGap < 0 || verticalGap > h * 0.5) return false;
+
+                const lineMinX = Math.min(l.start.x, l.end.x);
+                const lineMaxX = Math.max(l.start.x, l.end.x);
+                
+                const overlap = Math.min(lineMaxX, txtBounds.maxX) - Math.max(lineMinX, txtBounds.minX);
+                return overlap > w * 0.3;
+            });
+
+            if (hasUnderline) {
+                validTitles.push(txt);
+            }
+        }
+
+        if (validTitles.length > 0) {
+            // Found titles in this ring. 
+            // Sort by Height (largest first)
+            validTitles.sort((a, b) => (b.radius || 0) - (a.radius || 0));
+            return validTitles[0].text!;
+        }
+    }
+
+    return null;
 };
