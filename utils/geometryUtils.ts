@@ -96,11 +96,9 @@ export const getCenter = (entity: DxfEntity): Point | null => {
   return entity.center || entity.start || null;
 };
 
-// Returns beam properties: length and angle (in degrees)
 export const getBeamProperties = (entity: DxfEntity): { length: number, angle: number } => {
   if (entity.type === EntityType.LWPOLYLINE && entity.vertices && entity.vertices.length > 0) {
       if (entity.closed) {
-         // Find the longest segment to determine length and orientation
          let maxLen = 0;
          let angle = 0;
          const verts = entity.vertices;
@@ -178,52 +176,43 @@ export const transformPoint = (p: Point, scale: Point, rotationDeg: number, tran
   };
 };
 
-/**
- * Checks intersection between a ray (start point + direction vector) and a bounding box.
- * Returns the distance to intersection if hit, or Infinity.
- */
 const rayIntersectsBox = (start: Point, dir: Point, box: Bounds): number => {
-    // Standard slab method for Ray-AABB intersection
     let tmin = -Infinity;
     let tmax = Infinity;
 
-    // Check if dir is zero
     if (Math.abs(dir.x) < 1e-9 && Math.abs(dir.y) < 1e-9) return Infinity;
 
-    // X axis
     if (Math.abs(dir.x) > 1e-9) {
         const tx1 = (box.minX - start.x) / dir.x;
         const tx2 = (box.maxX - start.x) / dir.x;
         tmin = Math.max(tmin, Math.min(tx1, tx2));
         tmax = Math.min(tmax, Math.max(tx1, tx2));
     } else if (start.x < box.minX || start.x > box.maxX) {
-        return Infinity; // Parallel and outside
+        return Infinity;
     }
 
-    // Y axis
     if (Math.abs(dir.y) > 1e-9) {
         const ty1 = (box.minY - start.y) / dir.y;
         const ty2 = (box.maxY - start.y) / dir.y;
         tmin = Math.max(tmin, Math.min(ty1, ty2));
         tmax = Math.min(tmax, Math.max(ty1, ty2));
     } else if (start.y < box.minY || start.y > box.maxY) {
-        return Infinity; // Parallel and outside
+        return Infinity;
     }
 
-    if (tmax < tmin) return Infinity; // No intersection
-    if (tmax < 0) return Infinity; // Box is behind ray
+    if (tmax < tmin) return Infinity;
+    if (tmax < 0) return Infinity; // Box is fully behind
 
-    // If tmin < 0, start is inside box. We return tmin (negative) or 0? 
-    // For "Beam Snap", if we are inside a column, we want to know that.
-    // However, usually we cast from "clear air" towards wall. 
-    // If tmin is positive, that's the distance to entry.
-    return tmin;
+    // If start is inside the box (tmin < 0), return exit point (tmax)
+    // This allows walls starting inside another wall (e.g. at axis) to snap to the far side
+    if (tmin < 0) return tmax;
+
+    return tmin; // Returns entry point
 };
 
 const getRayIntersection = (start: Point, dir: Point, obstacles: DxfEntity[]): number => {
     let bestDist = Infinity;
     
-    // Normalize direction
     const len = Math.sqrt(dir.x*dir.x + dir.y*dir.y);
     if (len === 0) return Infinity;
     const ndir = { x: dir.x/len, y: dir.y/len };
@@ -232,7 +221,6 @@ const getRayIntersection = (start: Point, dir: Point, obstacles: DxfEntity[]): n
         const bounds = getEntityBounds(obs);
         if (!bounds) continue;
         
-        // Exact bounds check for precise snapping
         const dist = rayIntersectsBox(start, ndir, bounds);
         if (dist !== Infinity && dist < bestDist) {
             bestDist = dist;
@@ -242,8 +230,6 @@ const getRayIntersection = (start: Point, dir: Point, obstacles: DxfEntity[]): n
 };
 
 const parseBeamWidth = (text: string): number | null => {
-    // Matches patterns like "200x400", "200X400", "WLK10(5) 200x400"
-    // Capture group 1 is the width
     const match = text.match(/(\d{3,})[xX×]\d+/);
     if (match) {
         return parseInt(match[1], 10);
@@ -251,7 +237,55 @@ const parseBeamWidth = (text: string): number | null => {
     return null;
 };
 
-// Reconstructs parallel lines into closed polygons (walls/beams)
+const hasAxisBetween = (l1: DxfEntity, l2: DxfEntity, axisLines: DxfEntity[], gap: number): boolean => {
+    if (!l1.start || !l1.end || axisLines.length === 0) return false;
+
+    const mid1 = { x: (l1.start.x + l1.end.x)/2, y: (l1.start.y + l1.end.y)/2 };
+    
+    const v1 = { x: l1.end.x - l1.start.x, y: l1.end.y - l1.start.y };
+    const len1 = Math.sqrt(v1.x*v1.x + v1.y*v1.y);
+    if (len1 === 0) return false;
+    const u1 = { x: v1.x/len1, y: v1.y/len1 };
+
+    const tolerance = 200; // Relaxed tolerance for offset/near checks
+
+    for (const axis of axisLines) {
+        if (!axis.start || !axis.end) continue;
+        
+        const vA = { x: axis.end.x - axis.start.x, y: axis.end.y - axis.start.y };
+        const lenA = Math.sqrt(vA.x*vA.x + vA.y*vA.y);
+        if (lenA === 0) continue;
+
+        const dot = (v1.x * vA.x + v1.y * vA.y) / (len1 * lenA);
+        if (Math.abs(dot) < 0.98) continue; // Must be parallel
+
+        // 1. Lateral Check: Is the Axis line laterally "inside" or very close to the wall?
+        // We use infinite line distance to ignore the length of axis for this step.
+        const lateralDist = distancePointToInfiniteLine(mid1, axis.start, axis.end);
+        
+        // The axis should be roughly within the gap distance from the wall line (0 to gap).
+        if (lateralDist > gap + tolerance) continue;
+
+        // 2. Longitudinal Overlap Check: Does the axis actually span along the wall segment?
+        // Project Axis endpoints onto Wall Line 1
+        const tAs = ((axis.start.x - l1.start.x) * u1.x + (axis.start.y - l1.start.y) * u1.y);
+        const tAe = ((axis.end.x - l1.start.x) * u1.x + (axis.end.y - l1.start.y) * u1.y);
+        
+        const minA = Math.min(tAs, tAe);
+        const maxA = Math.max(tAs, tAe);
+        
+        // Wall interval is [0, len1]
+        const overlapStart = Math.max(0, minA);
+        const overlapEnd = Math.min(len1, maxA);
+        
+        // If there is significant longitudinal overlap (> 50 units), it's a match
+        if (overlapEnd - overlapStart > 50) {
+            return true;
+        }
+    }
+    return false;
+};
+
 export const findParallelPolygons = (
     lines: DxfEntity[], 
     tolerance = 1200, 
@@ -264,249 +298,255 @@ export const findParallelPolygons = (
   const polygons: DxfEntity[] = [];
   const used = new Set<number>(); 
 
-  // Sort lines by length descending to process main segments first
   const sortedLines = lines.map((l, i) => ({ l, i, len: calculateLength(l) })).sort((a, b) => b.len - a.len);
 
   for (let idxA = 0; idxA < sortedLines.length; idxA++) {
     const { l: l1, i: i, len: len1 } = sortedLines[idxA];
     if (used.has(i)) continue;
     if (l1.type !== EntityType.LINE || !l1.start || !l1.end) continue;
-    if (len1 < 50) continue; // Ignore tiny lines
+    if (len1 < 50) continue;
 
     const v1 = { x: l1.end.x - l1.start.x, y: l1.end.y - l1.start.y };
     
-    let bestMatchIdx = -1;
-    let minPerpDist = Infinity;
-
+    // ONE-TO-MANY MATCHING SUPPORT:
+    // We scan ALL other lines. If l1 is parallel to multiple segments (e.g. wall with openings),
+    // we create polygons for ALL of them. This is crucial for fixing missing wall sections.
     for (let idxB = idxA + 1; idxB < sortedLines.length; idxB++) {
        const { l: l2, i: j, len: len2 } = sortedLines[idxB];
        if (used.has(j)) continue;
        if (l2.type !== EntityType.LINE || !l2.start || !l2.end) continue;
 
+       // If lengths are too mismatched and small, skip, but allow long matching short
        if (Math.min(len1, len2) < 200) continue; 
 
        const v2 = { x: l2.end.x - l2.start.x, y: l2.end.y - l2.start.y };
-       
-       // Parallel Check
        const dot = (v1.x * v2.x + v1.y * v2.y) / (len1 * len2);
        if (Math.abs(dot) < 0.95) continue; 
 
-       // Proximity Check
        const l2Center = { x: (l2.start.x + l2.end.x)/2, y: (l2.start.y + l2.end.y)/2 };
        const dist = distancePointToLine(l2Center, l1.start, l1.end);
 
        if (dist > tolerance || dist < 10) continue; 
 
-       // Overlap Check
-       const centerDist = distance(getCenter(l1)!, l2Center);
-       const maxCombLen = (len1 + len2) / 2 + 1500;
-       if (centerDist > maxCombLen) continue; 
+       // Calculate Intersection/Overlap
+       const u = { x: v1.x/len1, y: v1.y/len1 };
+       const getT = (p: Point) => (p.x - l1.start!.x) * u.x + (p.y - l1.start!.y) * u.y;
+       
+       const tB1 = getT(l2.start);
+       const tB2 = getT(l2.end);
+       const tMinB = Math.min(tB1, tB2);
+       const tMaxB = Math.max(tB1, tB2);
+       
+       // Check overlap with l1 segment (0 to len1)
+       const overlapMin = Math.max(0, tMinB);
+       const overlapMax = Math.min(len1, tMaxB);
+       const overlapLen = overlapMax - overlapMin;
 
-       if (dist < minPerpDist) {
-           minPerpDist = dist;
-           bestMatchIdx = j;
-       }
-    }
+       if (overlapLen < 50) continue; 
 
-    if (bestMatchIdx !== -1) {
-        const l2 = lines.find((_, idx) => idx === bestMatchIdx);
-        let isValid = false; // Default to false, require validation
+       let isValid = false; 
+       const gap = dist;
 
-        if (l2 && l2.start && l2.end) {
-             const gap = minPerpDist;
-             
-             if (mode === 'WALL') {
-                 // --- WALL MODE ---
-                 // Relaxed rules: No axis check, no text check.
-                 // Walls are typically 100mm, 200mm, 240mm, 370mm, 400mm, 500mm
-                 if (gap >= 50 && gap <= 600) {
+       if (mode === 'WALL') {
+             // For Walls, verify Axis exists strictly between the pair
+             const axisFound = hasAxisBetween(l1, l2, axisLines, gap);
+             if (axisFound) {
+                 isValid = true;
+             }
+       } else {
+             // BEAM MODE
+             let foundAxis: DxfEntity | null = null;
+             if (axisLines.length > 0) {
+                const pairCenter = {
+                    x: (l1.start.x + l1.end.x + l2.start.x + l2.end.x) / 4,
+                    y: (l1.start.y + l1.end.y + l2.start.y + l2.end.y) / 4
+                };
+                foundAxis = axisLines.find(axis => {
+                    if (axis.type !== EntityType.LINE || !axis.start || !axis.end) return false;
+                    const distToCenter = distancePointToLine(pairCenter, axis.start, axis.end);
+                    if (distToCenter > gap * 0.8) return false; 
+                    const adx = axis.end.x - axis.start.x;
+                    const ady = axis.end.y - axis.start.y;
+                    const alen = Math.sqrt(adx*adx + ady*ady);
+                    const l1len = Math.sqrt(v1.x*v1.x + v1.y*v1.y);
+                    const dot = (v1.x * adx + v1.y * ady) / (l1len * alen);
+                    return Math.abs(dot) > 0.95;
+                }) || null;
+             }
+
+             if (foundAxis) {
+                 let widthFromText: number | null = null;
+                 for (const txt of textEntities) {
+                     if (!txt.start || !txt.text) continue;
+                     const distTextToAxis = distancePointToInfiniteLine(txt.start, foundAxis.start!, foundAxis.end!);
+                     if (distTextToAxis < 500) {
+                         const w = parseBeamWidth(txt.text);
+                         if (w) { widthFromText = w; break; }
+                     }
+                 }
+                 if (widthFromText) {
+                     if (Math.abs(gap - widthFromText) < 50) isValid = true;
+                 } else {
                      isValid = true;
                  }
              } else {
-                 // --- BEAM MODE ---
-                 // 1. Check for Axis
-                 let foundAxis: DxfEntity | null = null;
-
-                 if (axisLines.length > 0) {
-                    const pairCenter = {
-                        x: (l1.start.x + l1.end.x + l2.start.x + l2.end.x) / 4,
-                        y: (l1.start.y + l1.end.y + l2.start.y + l2.end.y) / 4
-                    };
-                    
-                    foundAxis = axisLines.find(axis => {
-                        if (axis.type !== EntityType.LINE || !axis.start || !axis.end) return false;
-                        // Distance Check (Center of beam pair to axis line)
-                        const distToCenter = distancePointToLine(pairCenter, axis.start, axis.end);
-                        if (distToCenter > gap * 0.8) return false; // Axis should be roughly inside the gap
-
-                        // Parallel Check
-                        const adx = axis.end.x - axis.start.x;
-                        const ady = axis.end.y - axis.start.y;
-                        const alen = Math.sqrt(adx*adx + ady*ady);
-                        const l1len = Math.sqrt(v1.x*v1.x + v1.y*v1.y);
-                        const dot = (v1.x * adx + v1.y * ady) / (l1len * alen);
-                        return Math.abs(dot) > 0.95;
-                    }) || null;
-                 }
-
-                 if (foundAxis && foundAxis.start && foundAxis.end) {
-                     // CASE A: Axis Exists.
-                     // Strategy: Look for text annotation associated with this AXIS.
-                     // We treat the axis as infinite because annotation might be far away.
-                     let widthFromText: number | null = null;
-                     
-                     for (const txt of textEntities) {
-                         if (!txt.start || !txt.text) continue;
-                         
-                         // Check distance from Text to the INFINITE Axis line
-                         const distTextToAxis = distancePointToInfiniteLine(txt.start, foundAxis.start!, foundAxis.end!);
-                         
-                         // If text is within ~500mm of the axis line, consider it a candidate
-                         if (distTextToAxis < 500) {
-                             const w = parseBeamWidth(txt.text);
-                             if (w) {
-                                 widthFromText = w;
-                                 break; // Found a valid dimension on this axis
-                             }
-                         }
-                     }
-
-                     if (widthFromText) {
-                         // If text says "200", and gap is ~200, it's a match.
-                         if (Math.abs(gap - widthFromText) < 50) {
-                             isValid = true;
-                         } else {
-                             // Axis found, Text found, but Width mismatch -> Likely not the right beam lines for this text
-                             isValid = false; 
-                         }
-                     } else {
-                         // Axis found, but No Text found.
-                         // User rule: "200中间如果有轴线...没有轴线的话..." -> Implicitly, if axis exists, it's likely a beam.
-                         // We accept it even without text, assuming the axis implies structural intent.
-                         isValid = true;
-                     }
-
-                 } else {
-                     // CASE B: No Axis Found.
-                     // User rule: "没有轴线的话，就找宽度300以内来找梁"
-                     if (gap <= 300) {
-                         isValid = true;
-                     } else {
-                         isValid = false;
-                     }
-                 }
+                 if (gap <= 300) isValid = true;
              }
-        }
+       }
 
-        if (isValid && l2) {
-            used.add(i);
-            used.add(bestMatchIdx);
-            
-            const poly = createPolygonFromPair(l1, l2, resultLayer, obstacles);
-            if (poly) polygons.push(poly);
-        }
+       if (isValid) {
+            const poly = createPolygonFromPair(l1, l2, resultLayer, obstacles, mode, gap);
+            if (poly) {
+                polygons.push(poly);
+                used.add(j); // Mark secondary line as used
+            }
+       }
     }
+    
+    // Mark primary line as used after checking all possible secondary matches
+    used.add(i);
   }
   return polygons;
 };
 
-const createPolygonFromPair = (l1: DxfEntity, l2: DxfEntity, layer: string, obstacles: DxfEntity[]): DxfEntity | null => {
+const createPolygonFromPair = (
+    l1: DxfEntity, 
+    l2: DxfEntity, 
+    layer: string, 
+    obstacles: DxfEntity[],
+    mode: 'BEAM' | 'WALL',
+    gap: number
+): DxfEntity | null => {
     if (!l1.start || !l1.end || !l2.start || !l2.end) return null;
 
-    // 1. Establish Coordinate System based on Line 1
     const v1 = { x: l1.end.x - l1.start.x, y: l1.end.y - l1.start.y };
     const len1 = Math.sqrt(v1.x*v1.x + v1.y*v1.y);
     if (len1 === 0) return null;
-    const u = { x: v1.x/len1, y: v1.y/len1 }; // Unit vector along beam axis
+    const u = { x: v1.x/len1, y: v1.y/len1 };
 
-    // Project points onto Line 1 axis
     const getT = (p: Point) => (p.x - l1.start!.x) * u.x + (p.y - l1.start!.y) * u.y;
 
-    const tA1 = 0; // l1.start
-    const tA2 = len1; // l1.end
+    const tA1 = 0;
+    const tA2 = len1;
     const tB1 = getT(l2.start);
     const tB2 = getT(l2.end);
 
-    const tMinUnion = Math.min(tA1, tA2, tB1, tB2);
-    const tMaxUnion = Math.max(tA1, tA2, tB1, tB2);
-    
-    // Intersection (Overlap) tells us where the beam "body" definitely is
+    // Overlap range
     const tMinOverlap = Math.max(Math.min(tA1, tA2), Math.min(tB1, tB2));
     const tMaxOverlap = Math.min(Math.max(tA1, tA2), Math.max(tB1, tB2));
 
-    // If no significant overlap, maybe not a beam pair?
-    if (tMaxOverlap - tMinOverlap < -500) return null; 
+    // Union range
+    const tMinUnion = Math.min(Math.min(tA1, tA2), Math.min(tB1, tB2));
+    const tMaxUnion = Math.max(Math.max(tA1, tA2), Math.max(tB1, tB2));
 
-    // 2. Calculate Perpendicular Vector to reach L2 (Beam Width)
-    const projL2Start = { x: l1.start.x + u.x * tB1, y: l1.start.y + u.y * tB1 };
-    const vPerp = { x: l2.start.x - projL2Start.x, y: l2.start.y - projL2Start.y };
-    
-    // 3. Find Beam Center Point (Start raycasting from middle of overlap)
-    // We use the overlap midpoint to avoid starting inside a column at the ends
-    const midT = (tMinOverlap + tMaxOverlap) / 2;
-    // The "Geometric Center" of the beam (between L1 and L2)
-    const beamCenter = { 
-        x: l1.start.x + u.x * midT + vPerp.x * 0.5,
-        y: l1.start.y + u.y * midT + vPerp.y * 0.5
-    };
+    if (tMaxOverlap - tMinOverlap < 50) return null;
 
-    // 4. Raycast Forward (+u) and Backward (-u) to snap to obstacles
-    const SNAP_TOLERANCE = 2000; // Snap to column if within 2m of expected end
+    let finalStartT = tMinOverlap;
+    let finalEndT = tMaxOverlap;
 
-    // Forward
-    const distFwd = getRayIntersection(beamCenter, u, obstacles);
-    let finalEndT = tMaxUnion;
-    
-    if (distFwd !== Infinity) {
-        const hitT = midT + distFwd;
-        // Logic: 
-        // 1. Trim: If beam lines go PAST the column (hitT < tMaxUnion), cut it short.
-        // 2. Extend: If beam lines stop SHORT of the column (hitT > tMaxUnion), extend if close enough.
+    if (mode === 'BEAM') {
+        const projL2Start = { x: l1.start.x + u.x * tB1, y: l1.start.y + u.y * tB1 };
+        const vPerp = { x: l2.start.x - projL2Start.x, y: l2.start.y - projL2Start.y };
         
-        // If hit is BEFORE the line ends (Trim), or WITHIN tolerance after (Extend)
-        if (hitT < tMaxUnion || (hitT - tMaxUnion < SNAP_TOLERANCE)) {
-            finalEndT = hitT;
+        const midT = (tMinOverlap + tMaxOverlap) / 2;
+        const beamCenter = { 
+            x: l1.start.x + u.x * midT + vPerp.x * 0.5,
+            y: l1.start.y + u.y * midT + vPerp.y * 0.5
+        };
+        const SNAP_TOLERANCE = 2000; 
+
+        const distFwd = getRayIntersection(beamCenter, u, obstacles);
+        finalEndT = tMaxUnion; 
+        if (distFwd !== Infinity) {
+            const hitT = midT + distFwd;
+            if (hitT < tMaxUnion || (hitT - tMaxUnion < SNAP_TOLERANCE)) finalEndT = hitT;
         }
-    }
 
-    // Backward
-    const distBack = getRayIntersection(beamCenter, { x: -u.x, y: -u.y }, obstacles);
-    let finalStartT = tMinUnion;
-
-    if (distBack !== Infinity) {
-        const hitT = midT - distBack;
-        // Logic: Trim if hitT > tMinUnion, Extend if hitT < tMinUnion (within tolerance)
-        if (hitT > tMinUnion || (tMinUnion - hitT < SNAP_TOLERANCE)) {
-            finalStartT = hitT;
+        const distBack = getRayIntersection(beamCenter, { x: -u.x, y: -u.y }, obstacles);
+        finalStartT = tMinUnion;
+        if (distBack !== Infinity) {
+            const hitT = midT - distBack;
+            if (hitT > tMinUnion || (tMinUnion - hitT < SNAP_TOLERANCE)) finalStartT = hitT;
         }
+
+        const pStartBase = { x: l1.start.x + u.x * finalStartT, y: l1.start.y + u.y * finalStartT };
+        const pEndBase = { x: l1.start.x + u.x * finalEndT, y: l1.start.y + u.y * finalEndT };
+
+        const c1 = pStartBase;
+        const c2 = pEndBase;
+        const c3 = { x: c2.x + vPerp.x, y: c2.y + vPerp.y };
+        const c4 = { x: c1.x + vPerp.x, y: c1.y + vPerp.y };
+
+        return { type: EntityType.LWPOLYLINE, layer: layer, vertices: [c1, c2, c3, c4], closed: true };
+
+    } else {
+        // WALL Mode
+        const cornerTolerance = gap * 2.5;
+        const startDiff = tMinOverlap - tMinUnion;
+        const endDiff = tMaxUnion - tMaxOverlap;
+
+        if (startDiff > 0 && startDiff < cornerTolerance) finalStartT = tMinUnion;
+        else finalStartT = tMinOverlap;
+
+        if (endDiff > 0 && endDiff < cornerTolerance) finalEndT = tMaxUnion;
+        else finalEndT = tMaxOverlap;
+
+        // --- Snapping / Raycasting for Walls (T-Junctions) ---
+        const SNAP_TOLERANCE = gap * 1.5;
+
+        // Prepare ray origin/direction perpendicular to wall
+        const projL2Start = { x: l1.start.x + u.x * tB1, y: l1.start.y + u.y * tB1 };
+        const vPerp = { x: l2.start.x - projL2Start.x, y: l2.start.y - projL2Start.y };
+        
+        // Shoot ray from the END
+        const endCenter = { 
+            x: l1.start.x + u.x * finalEndT + vPerp.x * 0.5,
+            y: l1.start.y + u.y * finalEndT + vPerp.y * 0.5
+        };
+        const distFwd = getRayIntersection(endCenter, u, obstacles);
+        if (distFwd !== Infinity && distFwd < SNAP_TOLERANCE) {
+             finalEndT = finalEndT + distFwd;
+        }
+
+        // Shoot ray from the START
+        const startCenter = { 
+            x: l1.start.x + u.x * finalStartT + vPerp.x * 0.5,
+            y: l1.start.y + u.y * finalStartT + vPerp.y * 0.5
+        };
+        const distBack = getRayIntersection(startCenter, { x: -u.x, y: -u.y }, obstacles);
+        if (distBack !== Infinity && distBack < SNAP_TOLERANCE) {
+             finalStartT = finalStartT - distBack;
+        }
+
+        if (finalEndT - finalStartT < 50) return null;
+
+        const p1 = { x: l1.start.x + u.x * finalStartT, y: l1.start.y + u.y * finalStartT };
+        const p2 = { x: l1.start.x + u.x * finalEndT, y: l1.start.y + u.y * finalEndT };
+
+        const projX = l1.start.x + u.x * tB1;
+        const projY = l1.start.y + u.y * tB1;
+        const offX = l2.start.x - projX;
+        const offY = l2.start.y - projY;
+        const offLen = Math.sqrt(offX*offX + offY*offY);
+        
+        const scale = (offLen > 0) ? (gap / offLen) : 1;
+        const wX = offX * scale;
+        const wY = offY * scale;
+
+        const c1 = p1;
+        const c2 = p2;
+        const c3 = { x: p2.x + wX, y: p2.y + wY };
+        const c4 = { x: p1.x + wX, y: p1.y + wY };
+
+        return {
+            type: EntityType.LWPOLYLINE,
+            layer: layer,
+            vertices: [c1, c2, c3, c4],
+            closed: true
+        };
     }
-
-    // Safety: ensure positive length
-    if (finalEndT - finalStartT < 100) return null;
-
-    // 5. Construct Rectangle Vertices
-    // Points on Base Line (L1 infinite line)
-    const pStartBase = { x: l1.start.x + u.x * finalStartT, y: l1.start.y + u.y * finalStartT };
-    const pEndBase = { x: l1.start.x + u.x * finalEndT, y: l1.start.y + u.y * finalEndT };
-
-    // Rectangle Corners
-    const c1 = pStartBase;
-    const c2 = pEndBase;
-    const c3 = { x: c2.x + vPerp.x, y: c2.y + vPerp.y };
-    const c4 = { x: c1.x + vPerp.x, y: c1.y + vPerp.y };
-
-    return {
-        type: EntityType.LWPOLYLINE,
-        layer: layer,
-        vertices: [c1, c2, c3, c4],
-        closed: true
-    };
 };
 
-/**
- * Calculates the bounding box of all entities in the list (and recursively in blocks).
- * Optionally filters by active layers.
- */
 export const calculateTotalBounds = (
     entities: DxfEntity[], 
     blocks: Record<string, DxfEntity[]>, 
@@ -516,9 +556,7 @@ export const calculateTotalBounds = (
     let hasEntities = false;
 
     const checkPoint = (x: number, y: number) => {
-      // Guard against invalid coordinates
       if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-      
       hasEntities = true;
       if (x < minX) minX = x;
       if (y < minY) minY = y;
@@ -527,34 +565,22 @@ export const calculateTotalBounds = (
     };
 
     const processEntity = (ent: DxfEntity, offsetX = 0, offsetY = 0, scaleX = 1, scaleY = 1, rotation = 0) => {
-       // --- Layer Visibility Check ---
-       // If activeLayers is provided, we typically skip layers not in the set.
-       // However, for nested entities (inside INSERTs), we must traverse the INSERT even if the INSERT's layer is hidden.
-       
        const isLayerActive = !activeLayers || activeLayers.has(ent.layer);
-
-       // If layer is hidden, only skip if it is NOT a container (INSERT).
-       if (!isLayerActive && ent.type !== EntityType.INSERT) {
-           return;
-       }
+       if (!isLayerActive && ent.type !== EntityType.INSERT) return;
 
        const transformAndCheck = (localX: number, localY: number) => {
           let tx = localX * scaleX;
           let ty = localY * scaleY;
-          
           if (rotation !== 0) {
               const rad = rotation * Math.PI / 180;
-              const cos = Math.cos(rad);
-              const sin = Math.sin(rad);
-              const rx = tx * cos - ty * sin;
-              const ry = tx * sin + ty * cos;
+              const rx = tx * Math.cos(rad) - ty * Math.sin(rad);
+              const ry = tx * Math.sin(rad) + ty * Math.cos(rad);
               tx = rx;
               ty = ry;
           }
           checkPoint(tx + offsetX, ty + offsetY);
        };
 
-       // Only process geometry if the layer is active
        if (isLayerActive) {
            if (ent.type === EntityType.LINE && ent.start && ent.end) {
              transformAndCheck(ent.start.x, ent.start.y);
@@ -573,7 +599,6 @@ export const calculateTotalBounds = (
            }
        }
        
-       // Handle INSERT traversal (always check children, even if parent layer is inactive)
        if (ent.type === EntityType.INSERT && ent.start && ent.blockName && blocks[ent.blockName]) {
           const subEntities = blocks[ent.blockName];
           let insLocalX = ent.start.x * scaleX;
@@ -591,53 +616,34 @@ export const calculateTotalBounds = (
           const nextScaleY = scaleY * (ent.scale?.y || 1);
           const nextRotation = rotation + (ent.rotation || 0);
 
-          // Handle MINSERT Grids
           const rows = ent.rowCount || 1;
           const cols = ent.columnCount || 1;
           const rSpace = ent.rowSpacing || 0;
           const cSpace = ent.columnSpacing || 0;
 
-          // Optimization: If single block, avoid loops
           if (rows === 1 && cols === 1) {
               subEntities.forEach(sub => {
-                  const effectiveLayer = sub.layer === '0' ? ent.layer : sub.layer;
-                  
-                  // Same check: If layer is hidden, only skip if NOT insert
-                  const isSubActive = !activeLayers || activeLayers.has(effectiveLayer);
-                  if (!isSubActive && sub.type !== EntityType.INSERT) return;
-
                   processEntity(sub, nextOffsetX, nextOffsetY, nextScaleX, nextScaleY, nextRotation);
               });
           } else {
-              // MINSERT Grid
               for (let r = 0; r < rows; r++) {
                   for (let c = 0; c < cols; c++) {
-                      // Calculate Grid Offset
                       let gridX = c * cSpace;
                       let gridY = r * rSpace;
-                      
-                      // Rotate grid offset based on block rotation
                       let rGridX = gridX * scaleX; 
                       let rGridY = gridY * scaleY;
 
                       if (ent.rotation) {
                           const rad = ent.rotation * Math.PI / 180;
-                          const cos = Math.cos(rad);
-                          const sin = Math.sin(rad);
-                          const tx = rGridX * cos - rGridY * sin;
-                          const ty = rGridX * sin + rGridY * cos;
+                          const tx = rGridX * Math.cos(rad) - rGridY * Math.sin(rad);
+                          const ty = rGridX * Math.sin(rad) + rGridY * Math.cos(rad);
                           rGridX = tx;
                           rGridY = ty;
                       }
-
                       const finalOffsetX = nextOffsetX + rGridX;
                       const finalOffsetY = nextOffsetY + rGridY;
 
                       subEntities.forEach(sub => {
-                          const effectiveLayer = sub.layer === '0' ? ent.layer : sub.layer;
-                          const isSubActive = !activeLayers || activeLayers.has(effectiveLayer);
-                          if (!isSubActive && sub.type !== EntityType.INSERT) return;
-
                           processEntity(sub, finalOffsetX, finalOffsetY, nextScaleX, nextScaleY, nextRotation);
                       });
                   }
@@ -647,7 +653,6 @@ export const calculateTotalBounds = (
     };
 
     entities.forEach(ent => processEntity(ent));
-
     if (!hasEntities) return { minX: 0, minY: 0, maxX: 100, maxY: 100 };
     return { minX, minY, maxX, maxY };
 };
