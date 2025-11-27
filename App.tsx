@@ -273,7 +273,8 @@ const App: React.FC = () => {
     const beamLayers = ['BEAM', 'BEAM_CON'];
     const entities = extractEntities(beamLayers, currentData.entities, currentData.blocks, currentData.blockBasePoints);
     
-    let obstacles = extractEntities(['WALL', 'COLU', 'COLUMN'], currentData.entities, currentData.blocks, currentData.blockBasePoints);
+    // Include calculated layers (WALL_CALC, COLU_CALC) in obstacles to ensure splitting happens against the "clean" geometry if it exists.
+    let obstacles = extractEntities(['WALL', 'COLU', 'COLUMN', 'WALL_CALC', 'COLU_CALC'], currentData.entities, currentData.blocks, currentData.blockBasePoints);
     if (obstacles.length < 10) {
          obstacles = findEntitiesInAllProjects(/wall|colu|column|柱|墙/i);
     }
@@ -292,9 +293,6 @@ const App: React.FC = () => {
     const validWidths = new Set<number>();
     textEntities.forEach(t => {
         if (!t.text) return;
-        // Regex to match "Width x Height" e.g., 200x500, 240X600. 
-        // Handles multiline (splits by line breaks implicitly via match or we can split explicitly)
-        // Matches number + [xX] + number. We capture the first number (width).
         const matches = t.text.match(/(\d+)[xX×]\d+/);
         if (matches) {
             const w = parseInt(matches[1], 10);

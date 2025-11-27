@@ -204,14 +204,8 @@ const rayIntersectsBox = (start: Point, dir: Point, box: Bounds): number => {
     if (tmax < 0) return Infinity; // Box is fully behind
 
     // Standard Raycasting behavior: 
-    // If start is inside the box (tmin < 0), return tmax (exit distance) is dangerous for snapping logic
-    // unless we specifically want to extend through.
-    // However, for walls starting inside columns/axes, we DO want to report the exit distance 
-    // so we can "trim" back or extend forward to the boundary.
-    // For now, returning tmax when inside helps capture the boundary.
-    if (tmin < 0) return tmax;
-
-    return tmin; // Returns entry point
+    // If start is inside the box (tmin < 0), return tmin.
+    return tmin; 
 };
 
 const getRayIntersection = (start: Point, dir: Point, obstacles: DxfEntity[]): number => {
@@ -232,6 +226,56 @@ const getRayIntersection = (start: Point, dir: Point, obstacles: DxfEntity[]): n
     }
     return bestDist;
 };
+
+// --- INTERVAL HELPERS ---
+const mergeIntervals = (intervals: [number, number][]) => {
+    if (intervals.length === 0) return [];
+    intervals.sort((a, b) => a[0] - b[0]);
+    const merged = [intervals[0]];
+    for (let i = 1; i < intervals.length; i++) {
+        const prev = merged[merged.length - 1];
+        const curr = intervals[i];
+        if (curr[0] < prev[1]) { // Overlap
+            prev[1] = Math.max(prev[1], curr[1]);
+        } else {
+            merged.push(curr);
+        }
+    }
+    return merged;
+};
+
+const subtractIntervals = (start: number, end: number, blockers: [number, number][]) => {
+    let result = [[start, end]];
+    for (const b of blockers) {
+        const nextResult = [];
+        for (const r of result) {
+            // Case 1: b is outside r (no overlap) -> keep r
+            if (b[1] <= r[0] || b[0] >= r[1]) {
+                nextResult.push(r);
+            } 
+            // Case 2: b covers r completely -> remove r
+            else if (b[0] <= r[0] && b[1] >= r[1]) {
+                continue;
+            }
+            // Case 3: b cuts r in middle -> split r
+            else if (b[0] > r[0] && b[1] < r[1]) {
+                nextResult.push([r[0], b[0]]);
+                nextResult.push([b[1], r[1]]);
+            }
+            // Case 4: b cuts start of r
+            else if (b[0] <= r[0] && b[1] < r[1]) {
+                nextResult.push([b[1], r[1]]);
+            }
+            // Case 5: b cuts end of r
+            else if (b[0] > r[0] && b[1] >= r[1]) {
+                nextResult.push([r[0], b[0]]);
+            }
+        }
+        result = nextResult;
+    }
+    return result;
+};
+// -----------------------
 
 const hasAxisBetween = (l1: DxfEntity, l2: DxfEntity, axisLines: DxfEntity[], gap: number): boolean => {
     if (!l1.start || !l1.end || axisLines.length === 0) return false;
@@ -255,26 +299,19 @@ const hasAxisBetween = (l1: DxfEntity, l2: DxfEntity, axisLines: DxfEntity[], ga
         const dot = (v1.x * vA.x + v1.y * vA.y) / (len1 * lenA);
         if (Math.abs(dot) < 0.98) continue; // Must be parallel
 
-        // 1. Lateral Check: Is the Axis line laterally "inside" or very close to the wall?
-        // We use infinite line distance to ignore the length of axis for this step.
         const lateralDist = distancePointToInfiniteLine(mid1, axis.start, axis.end);
         
-        // The axis should be roughly within the gap distance from the wall line (0 to gap).
         if (lateralDist > gap + tolerance) continue;
 
-        // 2. Longitudinal Overlap Check: Does the axis actually span along the wall segment?
-        // Project Axis endpoints onto Wall Line 1
         const tAs = ((axis.start.x - l1.start.x) * u1.x + (axis.start.y - l1.start.y) * u1.y);
         const tAe = ((axis.end.x - l1.start.x) * u1.x + (axis.end.y - l1.start.y) * u1.y);
         
         const minA = Math.min(tAs, tAe);
         const maxA = Math.max(tAs, tAe);
         
-        // Wall interval is [0, len1]
         const overlapStart = Math.max(0, minA);
         const overlapEnd = Math.min(len1, maxA);
         
-        // If there is significant longitudinal overlap (> 50 units), it's a match
         if (overlapEnd - overlapStart > 50) {
             return true;
         }
@@ -349,10 +386,7 @@ export const findParallelPolygons = (
              }
        } else {
              // BEAM MODE logic...
-             // STRICT VALIDATION based on extracted text widths
              if (validWidths.size > 0) {
-                 // If we found width text annotations, ONLY accept lines that match those widths
-                 // Gap must be equal to one of the valid widths (+- 2.5mm tolerance)
                  for (const w of validWidths) {
                      if (Math.abs(gap - w) <= 2.5) {
                          isValid = true;
@@ -360,16 +394,14 @@ export const findParallelPolygons = (
                      }
                  }
              } else {
-                 // Fallback if no text annotations found
-                 // Use generic reasonable beam widths
                  if (gap >= 100 && gap <= 1000) isValid = true; 
              }
        }
 
        if (isValid) {
-            const poly = createPolygonFromPair(l1, l2, resultLayer, obstacles, mode, gap);
-            if (poly) {
-                polygons.push(poly);
+            const resultEntities = createPolygonFromPair(l1, l2, resultLayer, obstacles, mode, gap);
+            if (resultEntities.length > 0) {
+                polygons.push(...resultEntities);
                 used.add(j); // Mark secondary line as used
             }
        }
@@ -387,12 +419,12 @@ const createPolygonFromPair = (
     obstacles: DxfEntity[],
     mode: 'BEAM' | 'WALL',
     gap: number
-): DxfEntity | null => {
-    if (!l1.start || !l1.end || !l2.start || !l2.end) return null;
+): DxfEntity[] => {
+    if (!l1.start || !l1.end || !l2.start || !l2.end) return [];
 
     const v1 = { x: l1.end.x - l1.start.x, y: l1.end.y - l1.start.y };
     const len1 = Math.sqrt(v1.x*v1.x + v1.y*v1.y);
-    if (len1 === 0) return null;
+    if (len1 === 0) return [];
     const u = { x: v1.x/len1, y: v1.y/len1 };
 
     const getT = (p: Point) => (p.x - l1.start!.x) * u.x + (p.y - l1.start!.y) * u.y;
@@ -410,66 +442,116 @@ const createPolygonFromPair = (
     const tMinUnion = Math.min(Math.min(tA1, tA2), Math.min(tB1, tB2));
     const tMaxUnion = Math.max(Math.max(tA1, tA2), Math.max(tB1, tB2));
 
-    if (tMaxOverlap - tMinOverlap < 50) return null;
+    if (tMaxOverlap - tMinOverlap < 50) return [];
 
-    let finalStartT = tMinOverlap;
-    let finalEndT = tMaxOverlap;
+    const projL2Start = { x: l1.start.x + u.x * tB1, y: l1.start.y + u.y * tB1 };
+    const vPerp = { x: l2.start.x - projL2Start.x, y: l2.start.y - projL2Start.y };
 
     if (mode === 'BEAM') {
-        const projL2Start = { x: l1.start.x + u.x * tB1, y: l1.start.y + u.y * tB1 };
-        const vPerp = { x: l2.start.x - projL2Start.x, y: l2.start.y - projL2Start.y };
+        // Boolean Subtraction Logic for Beams
+        // Instead of raycasting from center, we check the full length and subtract obstacles
         
-        const midT = (tMinOverlap + tMaxOverlap) / 2;
-        const beamCenter = { 
-            x: l1.start.x + u.x * midT + vPerp.x * 0.5,
-            y: l1.start.y + u.y * midT + vPerp.y * 0.5
-        };
-        const SNAP_TOLERANCE = 2000; 
-
-        const distFwd = getRayIntersection(beamCenter, u, obstacles);
-        finalEndT = tMaxUnion; 
-        if (distFwd !== Infinity) {
-            const hitT = midT + distFwd;
-            if (hitT < tMaxUnion || (hitT - tMaxUnion < SNAP_TOLERANCE)) finalEndT = hitT;
+        const blockers: [number, number][] = [];
+        const beamWidth = gap;
+        // The beam occupies lateral space from 0 to |vPerp| (gap).
+        // vPerp is the vector from Line 1 to Line 2. 
+        // We project obstacles onto vPerp to see if they block this corridor.
+        
+        for (const obs of obstacles) {
+             const bounds = getEntityBounds(obs);
+             if (!bounds) continue;
+             
+             // Simple AABB overlap check first? 
+             // Project Bounds corners onto u and vPerp
+             const corners = [
+                 {x: bounds.minX, y: bounds.minY},
+                 {x: bounds.maxX, y: bounds.minY},
+                 {x: bounds.maxX, y: bounds.maxY},
+                 {x: bounds.minX, y: bounds.maxY}
+             ];
+             
+             let minU = Infinity, maxU = -Infinity;
+             let minV = Infinity, maxV = -Infinity;
+             
+             for (const c of corners) {
+                 const relX = c.x - l1.start!.x;
+                 const relY = c.y - l1.start!.y;
+                 const tU = relX * u.x + relY * u.y;
+                 // Project onto normalized vPerp
+                 const nV = { x: vPerp.x/gap, y: vPerp.y/gap };
+                 const tV = relX * nV.x + relY * nV.y;
+                 
+                 minU = Math.min(minU, tU);
+                 maxU = Math.max(maxU, tU);
+                 minV = Math.min(minV, tV);
+                 maxV = Math.max(maxV, tV);
+             }
+             
+             // Beam lateral range is [0, gap] (or [gap, 0] depending on direction, but vPerp length is gap)
+             // Check lateral overlap. Overlap must be significant (e.g. > 10mm)
+             const beamVMin = 0;
+             const beamVMax = gap;
+             
+             const latOverlapStart = Math.max(minV, beamVMin);
+             const latOverlapEnd = Math.min(maxV, beamVMax);
+             
+             if (latOverlapEnd - latOverlapStart > 10) {
+                 // It blocks! Record the longitudinal interval
+                 blockers.push([minU, maxU]);
+             }
         }
-
-        const distBack = getRayIntersection(beamCenter, { x: -u.x, y: -u.y }, obstacles);
-        finalStartT = tMinUnion;
-        if (distBack !== Infinity) {
-            const hitT = midT - distBack;
-            if (hitT > tMinUnion || (tMinUnion - hitT < SNAP_TOLERANCE)) finalStartT = hitT;
+        
+        const mergedBlockers = mergeIntervals(blockers);
+        // Subtract blockers from the full Union range
+        // Note: Beams typically span between columns. The CAD lines might go through.
+        // We take the full union as candidate.
+        const validIntervals = subtractIntervals(tMinUnion, tMaxUnion, mergedBlockers);
+        
+        const results: DxfEntity[] = [];
+        
+        for (const interval of validIntervals) {
+            const startT = interval[0];
+            const endT = interval[1];
+            
+            // Filter short fragments
+            if (endT - startT < 200) continue; 
+            
+            const pStartBase = { x: l1.start.x + u.x * startT, y: l1.start.y + u.y * startT };
+            const pEndBase = { x: l1.start.x + u.x * endT, y: l1.start.y + u.y * endT };
+            
+            const c1 = pStartBase;
+            const c2 = pEndBase;
+            const c3 = { x: c2.x + vPerp.x, y: c2.y + vPerp.y };
+            const c4 = { x: c1.x + vPerp.x, y: c1.y + vPerp.y };
+            
+            results.push({
+                type: EntityType.LWPOLYLINE,
+                layer: layer,
+                vertices: [c1, c2, c3, c4],
+                closed: true
+            });
         }
-
-        const pStartBase = { x: l1.start.x + u.x * finalStartT, y: l1.start.y + u.y * finalStartT };
-        const pEndBase = { x: l1.start.x + u.x * finalEndT, y: l1.start.y + u.y * finalEndT };
-
-        const c1 = pStartBase;
-        const c2 = pEndBase;
-        const c3 = { x: c2.x + vPerp.x, y: c2.y + vPerp.y };
-        const c4 = { x: c1.x + vPerp.x, y: c1.y + vPerp.y };
-
-        return { type: EntityType.LWPOLYLINE, layer: layer, vertices: [c1, c2, c3, c4], closed: true };
+        
+        return results;
 
     } else {
-        // WALL Mode
+        // WALL Mode - Keep existing logic (Trim/Extend), wrap in array
+        let finalStartT = tMinOverlap;
+        let finalEndT = tMaxOverlap;
+
         const cornerTolerance = gap * 2.5;
         const startDiff = tMinOverlap - tMinUnion;
         const endDiff = tMaxUnion - tMaxOverlap;
 
-        // Try to extend to Union (fill corners)
         if (startDiff > 0 && startDiff < cornerTolerance) finalStartT = tMinUnion;
         else finalStartT = tMinOverlap;
 
         if (endDiff > 0 && endDiff < cornerTolerance) finalEndT = tMaxUnion;
         else finalEndT = tMaxOverlap;
 
-        // --- Snapping / Raycasting for Walls (T-Junctions) ---
+        // Snapping / Raycasting for Walls
         const SNAP_TOLERANCE = gap * 1.5;
 
-        // Prepare ray origin/direction perpendicular to wall
-        const projL2Start = { x: l1.start.x + u.x * tB1, y: l1.start.y + u.y * tB1 };
-        const vPerp = { x: l2.start.x - projL2Start.x, y: l2.start.y - projL2Start.y };
-        
         // Shoot ray from the END
         const endCenter = { 
             x: l1.start.x + u.x * finalEndT + vPerp.x * 0.5,
@@ -490,7 +572,7 @@ const createPolygonFromPair = (
              finalStartT = finalStartT - distBack;
         }
 
-        if (finalEndT - finalStartT < 50) return null;
+        if (finalEndT - finalStartT < 50) return [];
 
         const p1 = { x: l1.start.x + u.x * finalStartT, y: l1.start.y + u.y * finalStartT };
         const p2 = { x: l1.start.x + u.x * finalEndT, y: l1.start.y + u.y * finalEndT };
@@ -510,12 +592,12 @@ const createPolygonFromPair = (
         const c3 = { x: p2.x + wX, y: p2.y + wY };
         const c4 = { x: p1.x + wX, y: p1.y + wY };
 
-        return {
+        return [{
             type: EntityType.LWPOLYLINE,
             layer: layer,
             vertices: [c1, c2, c3, c4],
             closed: true
-        };
+        }];
     }
 };
 
