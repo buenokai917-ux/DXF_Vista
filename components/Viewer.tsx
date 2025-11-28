@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { DxfData, LayerColors } from '../types';
+import { DxfData, LayerColors, Bounds, SearchResult } from '../types';
 import { ZoomIn, ZoomOut, Maximize, MousePointer2 } from 'lucide-react';
 import { calculateTotalBounds } from '../utils/geometryUtils';
 import { renderDxfToCanvas } from '../utils/renderUtils';
@@ -9,10 +9,22 @@ interface ViewerProps {
   activeLayers: Set<string>;
   layerColors: LayerColors;
   filledLayers?: Set<string>;
+  targetBounds?: Bounds | null; // For auto-focus
+  highlights?: SearchResult[]; // For search result highlighting
+  activeHighlightIndex?: number;
   onRef?: (ref: HTMLCanvasElement | null) => void;
 }
 
-export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors, filledLayers, onRef }) => {
+export const Viewer: React.FC<ViewerProps> = ({ 
+  data, 
+  activeLayers, 
+  layerColors, 
+  filledLayers, 
+  targetBounds, 
+  highlights, 
+  activeHighlightIndex, 
+  onRef 
+}) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   
@@ -57,12 +69,43 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
   }, [data, activeLayers]);
 
   // Fit to screen on initial load or data change only.
-  // We explicitly disable the exhaustive-deps rule here because we ONLY want to auto-fit
-  // when the file changes (data reference changes), NOT when activeLayers changes.
   useEffect(() => {
     fitToScreen();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
+
+  // --- Focus on Target Bounds (Search Result) ---
+  useEffect(() => {
+    if (!targetBounds || !containerRef.current) return;
+
+    const rect = containerRef.current.getBoundingClientRect();
+    
+    // Center of the target
+    const targetCenterX = (targetBounds.minX + targetBounds.maxX) / 2;
+    const targetCenterY = (targetBounds.minY + targetBounds.maxY) / 2;
+    
+    // Dimensions of the target
+    const targetW = targetBounds.maxX - targetBounds.minX;
+    const targetH = targetBounds.maxY - targetBounds.minY;
+
+    // Determine appropriate zoom level
+    // Ensure we have some context around the text (at least 6x the text size, or min 5000 units)
+    const contextW = Math.max(targetW * 6, 5000); 
+    const contextH = Math.max(targetH * 6, 5000);
+    
+    const scaleX = rect.width / contextW;
+    const scaleY = rect.height / contextH;
+    
+    // Choose the smaller scale to fit context, but cap max zoom to avoid getting too close
+    let newK = Math.min(scaleX, scaleY);
+    
+    // Center the view
+    const newX = (rect.width / 2) - targetCenterX * newK;
+    const newY = (rect.height / 2) - targetCenterY * newK;
+
+    setTransform({ k: newK, x: newX, y: newY });
+
+  }, [targetBounds]);
 
   const handleWheel = (e: React.WheelEvent) => {
     if (!containerRef.current) return;
@@ -124,7 +167,6 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
 
     ctx.scale(dpr, dpr);
     
-    // Delegate actual drawing to the shared utility
     renderDxfToCanvas({
         ctx,
         data,
@@ -134,10 +176,12 @@ export const Viewer: React.FC<ViewerProps> = ({ data, activeLayers, layerColors,
         transform,
         width: rect.width,
         height: rect.height,
-        isPdfExport: false
+        isPdfExport: false,
+        highlights,
+        activeHighlightIndex
     });
 
-  }, [data, activeLayers, transform, layerColors, filledLayers]);
+  }, [data, activeLayers, transform, layerColors, filledLayers, highlights, activeHighlightIndex]);
 
   useEffect(() => {
     const handleResize = () => setTransform(t => ({...t})); 

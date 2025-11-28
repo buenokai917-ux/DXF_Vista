@@ -329,93 +329,6 @@ const hasAxisBetween = (l1: DxfEntity, l2: DxfEntity, axisLines: DxfEntity[], ga
     return false;
 };
 
-export const findParallelPolygons = (
-    lines: DxfEntity[], 
-    tolerance = 1200, 
-    resultLayer = 'CALC_LAYER', 
-    obstacles: DxfEntity[] = [],
-    axisLines: DxfEntity[] = [],
-    textEntities: DxfEntity[] = [],
-    mode: 'BEAM' | 'WALL' = 'BEAM',
-    validWidths: Set<number> = new Set()
-): DxfEntity[] => {
-  const polygons: DxfEntity[] = [];
-  const used = new Set<number>(); 
-
-  const sortedLines = lines.map((l, i) => ({ l, i, len: calculateLength(l) })).sort((a, b) => b.len - a.len);
-
-  for (let idxA = 0; idxA < sortedLines.length; idxA++) {
-    const { l: l1, i: i, len: len1 } = sortedLines[idxA];
-    if (used.has(i)) continue;
-    if (l1.type !== EntityType.LINE || !l1.start || !l1.end) continue;
-    if (len1 < 50) continue;
-
-    const v1 = { x: l1.end.x - l1.start.x, y: l1.end.y - l1.start.y };
-    
-    for (let idxB = idxA + 1; idxB < sortedLines.length; idxB++) {
-       const { l: l2, i: j, len: len2 } = sortedLines[idxB];
-       if (used.has(j)) continue;
-       if (l2.type !== EntityType.LINE || !l2.start || !l2.end) continue;
-
-       if (Math.min(len1, len2) < 200) continue; 
-
-       const v2 = { x: l2.end.x - l2.start.x, y: l2.end.y - l2.start.y };
-       const dot = (v1.x * v2.x + v1.y * v2.y) / (len1 * len2);
-       if (Math.abs(dot) < 0.95) continue; 
-
-       const l2Center = { x: (l2.start.x + l2.end.x)/2, y: (l2.start.y + l2.end.y)/2 };
-       const dist = distancePointToLine(l2Center, l1.start, l1.end);
-
-       if (dist > tolerance || dist < 10) continue; 
-
-       const u = { x: v1.x/len1, y: v1.y/len1 };
-       const getT = (p: Point) => (p.x - l1.start!.x) * u.x + (p.y - l1.start!.y) * u.y;
-       
-       const tB1 = getT(l2.start);
-       const tB2 = getT(l2.end);
-       const tMinB = Math.min(tB1, tB2);
-       const tMaxB = Math.max(tB1, tB2);
-       
-       const overlapMin = Math.max(0, tMinB);
-       const overlapMax = Math.min(len1, tMaxB);
-       const overlapLen = overlapMax - overlapMin;
-
-       if (overlapLen < 50) continue; 
-
-       let isValid = false; 
-       const gap = dist;
-
-       if (mode === 'WALL') {
-             const axisFound = hasAxisBetween(l1, l2, axisLines, gap);
-             if (axisFound) {
-                 isValid = true;
-             }
-       } else {
-             if (validWidths.size > 0) {
-                 for (const w of validWidths) {
-                     if (Math.abs(gap - w) <= 2.5) {
-                         isValid = true;
-                         break;
-                     }
-                 }
-             } else {
-                 if (gap >= 100 && gap <= 1000) isValid = true; 
-             }
-       }
-
-       if (isValid) {
-            const resultEntities = createPolygonFromPair(l1, l2, resultLayer, obstacles, mode, gap);
-            if (resultEntities.length > 0) {
-                polygons.push(...resultEntities);
-                used.add(j); 
-            }
-       }
-    }
-    used.add(i);
-  }
-  return polygons;
-};
-
 const createPolygonFromPair = (
     l1: DxfEntity, 
     l2: DxfEntity, 
@@ -581,6 +494,93 @@ const createPolygonFromPair = (
             closed: true
         }];
     }
+};
+
+export const findParallelPolygons = (
+    lines: DxfEntity[], 
+    tolerance = 1200, 
+    resultLayer = 'CALC_LAYER', 
+    obstacles: DxfEntity[] = [],
+    axisLines: DxfEntity[] = [],
+    textEntities: DxfEntity[] = [],
+    mode: 'BEAM' | 'WALL' = 'BEAM',
+    validWidths: Set<number> = new Set()
+): DxfEntity[] => {
+  const polygons: DxfEntity[] = [];
+  const used = new Set<number>(); 
+
+  const sortedLines = lines.map((l, i) => ({ l, i, len: calculateLength(l) })).sort((a, b) => b.len - a.len);
+
+  for (let idxA = 0; idxA < sortedLines.length; idxA++) {
+    const { l: l1, i: i, len: len1 } = sortedLines[idxA];
+    if (used.has(i)) continue;
+    if (l1.type !== EntityType.LINE || !l1.start || !l1.end) continue;
+    if (len1 < 50) continue;
+
+    const v1 = { x: l1.end.x - l1.start.x, y: l1.end.y - l1.start.y };
+    
+    for (let idxB = idxA + 1; idxB < sortedLines.length; idxB++) {
+       const { l: l2, i: j, len: len2 } = sortedLines[idxB];
+       if (used.has(j)) continue;
+       if (l2.type !== EntityType.LINE || !l2.start || !l2.end) continue;
+
+       if (Math.min(len1, len2) < 200) continue; 
+
+       const v2 = { x: l2.end.x - l2.start.x, y: l2.end.y - l2.start.y };
+       const dot = (v1.x * v2.x + v1.y * v2.y) / (len1 * len2);
+       if (Math.abs(dot) < 0.95) continue; 
+
+       const l2Center = { x: (l2.start.x + l2.end.x)/2, y: (l2.start.y + l2.end.y)/2 };
+       const dist = distancePointToLine(l2Center, l1.start, l1.end);
+
+       if (dist > tolerance || dist < 10) continue; 
+
+       const u = { x: v1.x/len1, y: v1.y/len1 };
+       const getT = (p: Point) => (p.x - l1.start!.x) * u.x + (p.y - l1.start!.y) * u.y;
+       
+       const tB1 = getT(l2.start);
+       const tB2 = getT(l2.end);
+       const tMinB = Math.min(tB1, tB2);
+       const tMaxB = Math.max(tB1, tB2);
+       
+       const overlapMin = Math.max(0, tMinB);
+       const overlapMax = Math.min(len1, tMaxB);
+       const overlapLen = overlapMax - overlapMin;
+
+       if (overlapLen < 50) continue; 
+
+       let isValid = false; 
+       const gap = dist;
+
+       if (mode === 'WALL') {
+             const axisFound = hasAxisBetween(l1, l2, axisLines, gap);
+             if (axisFound) {
+                 isValid = true;
+             }
+       } else {
+             if (validWidths.size > 0) {
+                 for (const w of validWidths) {
+                     if (Math.abs(gap - w) <= 2.5) {
+                         isValid = true;
+                         break;
+                     }
+                 }
+             } else {
+                 if (gap >= 100 && gap <= 1000) isValid = true; 
+             }
+       }
+
+       if (isValid) {
+            const resultEntities = createPolygonFromPair(l1, l2, resultLayer, obstacles, mode, gap);
+            if (resultEntities.length > 0) {
+                polygons.push(...resultEntities);
+                used.add(j); 
+            }
+       }
+    }
+    used.add(i);
+  }
+  return polygons;
 };
 
 export const calculateTotalBounds = (
@@ -754,10 +754,12 @@ export const findTitleForBounds = (
     box: Bounds, 
     texts: DxfEntity[], 
     lines: DxfEntity[], 
+    layerFilter: string = '',
     maxMargin = 25000 
-): string | null => {
+): { title: string | null, scannedBounds: Bounds[] } => {
     // Search in expanding rings to find the *nearest* title
     const step = 500; // Step size in CAD units (mm)
+    const scannedBounds: Bounds[] = [];
     
     for (let currentMargin = 0; currentMargin <= maxMargin; currentMargin += step) {
         const innerMargin = Math.max(0, currentMargin - step);
@@ -776,6 +778,8 @@ export const findTitleForBounds = (
              maxY: box.maxY + innerMargin
         };
 
+        scannedBounds.push(outerBox);
+
         const candidates = texts.filter(t => {
             if (!t.start || !t.text) return false;
             
@@ -791,6 +795,9 @@ export const findTitleForBounds = (
 
             // Exclude unwanted layers (Standard practice: Grid IDs and Dimensions are not titles)
             if (t.layer.toUpperCase().includes('AXIS') || t.layer.toUpperCase().includes('DIM')) return false;
+
+            // Filter by specific layer if user provided one
+            if (layerFilter && !t.layer.toUpperCase().includes(layerFilter.toUpperCase())) return false;
 
             // Exclude Numeric / Dimensions (e.g. "200", "200x500", "3.60")
             // Regex matches strings that are purely numbers, whitespace, or math/dimension symbols
@@ -811,23 +818,32 @@ export const findTitleForBounds = (
                 maxY: txt.start!.y + h
             };
 
-            // Check for Underline
+            // Check for Underline (Line or Polyline Segment)
             const hasUnderline = lines.some(l => {
-                if (!l.start || !l.end) return false;
-                if (Math.abs(l.start.y - l.end.y) > h * 0.5) return false; // Not horizontal
-                
-                const lineY = (l.start.y + l.end.y) / 2;
-                const verticalGap = txtBounds.minY - lineY; // Distance from Text Bottom to Line
-                
-                // Requirement: Line must be BELOW the text (gap > 0)
-                // and distance must be between 0 and 0.5 times the text height.
-                if (verticalGap < 0 || verticalGap > h * 0.5) return false;
+                const checkSegment = (p1: Point, p2: Point) => {
+                    if (Math.abs(p1.y - p2.y) > h * 0.5) return false; // Not horizontal
+                    
+                    const lineY = (p1.y + p2.y) / 2;
+                    const verticalGap = txtBounds.minY - lineY; // Distance from Text Bottom to Line
+                    
+                    // Relaxed Check: Allow line to slightly touch text (-0.2h) or be up to 0.6h below
+                    if (verticalGap < -h * 0.2 || verticalGap > h * 0.6) return false;
 
-                const lineMinX = Math.min(l.start.x, l.end.x);
-                const lineMaxX = Math.max(l.start.x, l.end.x);
-                
-                const overlap = Math.min(lineMaxX, txtBounds.maxX) - Math.max(lineMinX, txtBounds.minX);
-                return overlap > w * 0.3;
+                    const lineMinX = Math.min(p1.x, p2.x);
+                    const lineMaxX = Math.max(p1.x, p2.x);
+                    
+                    const overlap = Math.min(lineMaxX, txtBounds.maxX) - Math.max(lineMinX, txtBounds.minX);
+                    return overlap > w * 0.3;
+                };
+
+                if (l.type === EntityType.LINE && l.start && l.end) {
+                    return checkSegment(l.start, l.end);
+                } else if (l.type === EntityType.LWPOLYLINE && l.vertices && l.vertices.length > 1) {
+                    for (let i = 0; i < l.vertices.length - 1; i++) {
+                        if (checkSegment(l.vertices[i], l.vertices[i+1])) return true;
+                    }
+                }
+                return false;
             });
 
             if (hasUnderline) {
@@ -839,9 +855,9 @@ export const findTitleForBounds = (
             // Found titles in this ring. 
             // Sort by Height (largest first)
             validTitles.sort((a, b) => (b.radius || 0) - (a.radius || 0));
-            return validTitles[0].text!;
+            return { title: validTitles[0].text!, scannedBounds };
         }
     }
 
-    return null;
+    return { title: null, scannedBounds };
 };

@@ -1,12 +1,12 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { jsPDF } from 'jspdf';
 import { parseDxf } from './utils/dxfParser';
-import { DxfData, LayerColors, DxfEntity, EntityType, Point } from './types';
-import { getBeamProperties, getCenter, transformPoint, findParallelPolygons, calculateLength, calculateTotalBounds, groupEntitiesByProximity, findTitleForBounds } from './utils/geometryUtils';
+import { DxfData, LayerColors, DxfEntity, EntityType, Point, Bounds, SearchResult } from './types';
+import { getBeamProperties, getCenter, transformPoint, findParallelPolygons, calculateLength, calculateTotalBounds, groupEntitiesByProximity, findTitleForBounds, getEntityBounds } from './utils/geometryUtils';
 import { Viewer } from './components/Viewer';
 import { Button } from './components/Button';
 import { renderDxfToCanvas } from './utils/renderUtils';
-import { Upload, Layers, Download, Image as ImageIcon, FileText, Settings, X, RefreshCw, Globe, Search, Calculator, Square, Box, Plus, File as FileIcon, Grid } from 'lucide-react';
+import { Upload, Layers, Download, Image as ImageIcon, FileText, Settings, X, RefreshCw, Globe, Search, Calculator, Square, Box, Plus, File as FileIcon, Grid, ChevronUp, ChevronDown } from 'lucide-react';
 
 // Standard CAD Colors (Index 1-7 + Grays + Common)
 const CAD_COLORS = [
@@ -41,6 +41,12 @@ const App: React.FC = () => {
   const [isSidebarOpen, setSidebarOpen] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const [pickingColorLayer, setPickingColorLayer] = useState<string | null>(null);
+  
+  // Search State
+  const [searchText, setSearchText] = useState('');
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [currentResultIdx, setCurrentResultIdx] = useState(-1);
+  
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const activeProject = useMemo(() => 
@@ -265,6 +271,87 @@ const App: React.FC = () => {
       return results;
   };
 
+  // --- SEARCH FUNCTIONS ---
+
+  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+      setSearchText(e.target.value);
+      // If user clears input, clear results
+      if (!e.target.value) {
+          handleClearSearch();
+      }
+  };
+
+  const handleClearSearch = () => {
+      setSearchText('');
+      setSearchResults([]);
+      setCurrentResultIdx(-1);
+  };
+
+  const performTextSearch = () => {
+      if (!activeProject || !searchText.trim()) return;
+      
+      setIsLoading(true);
+      setTimeout(() => {
+          // Search ALL layers in the active project
+          const allEntities = extractEntities(activeProject.data.layers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
+          
+          const query = searchText.toLowerCase();
+          const matches: SearchResult[] = [];
+
+          allEntities.forEach(ent => {
+              if (ent.type === EntityType.TEXT || ent.type === EntityType.ATTRIB) { 
+                   if (ent.text && ent.text.toLowerCase().includes(query)) {
+                       const bounds = getEntityBounds(ent);
+                       if (bounds) {
+                           matches.push({
+                               bounds,
+                               rotation: ent.startAngle || 0
+                           });
+                       }
+                   }
+              }
+          });
+
+          // Sort matches top-left to bottom-right for consistent navigation
+          matches.sort((a, b) => {
+              // Group by rough Y position (lines), then X
+              const rowA = Math.floor(a.bounds.minY / 1000);
+              const rowB = Math.floor(b.bounds.minY / 1000);
+              if (rowA !== rowB) return rowB - rowA; // Top to bottom (higher Y is top in CAD typically)
+              return a.bounds.minX - b.bounds.minX; // Left to right
+          });
+
+          setSearchResults(matches);
+          setCurrentResultIdx(matches.length > 0 ? 0 : -1);
+          setIsLoading(false);
+
+          if (matches.length === 0) {
+              alert("No matches found.");
+          }
+      }, 50);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+      if (e.key === 'Enter') {
+          if (searchResults.length > 0) {
+              handleNextResult();
+          } else {
+              performTextSearch();
+          }
+      }
+  };
+
+  const handleNextResult = () => {
+      if (searchResults.length === 0) return;
+      setCurrentResultIdx(prev => (prev + 1) % searchResults.length);
+  };
+
+  const handlePrevResult = () => {
+      if (searchResults.length === 0) return;
+      setCurrentResultIdx(prev => (prev - 1 + searchResults.length) % searchResults.length);
+  };
+
+
   const calculateBeams = () => {
     if (!activeProject) return;
 
@@ -457,6 +544,7 @@ const App: React.FC = () => {
   const calculateSplitRegions = () => {
       if (!activeProject) return;
       const resultLayer = 'VIEWPORT_CALC';
+      const debugLayer = 'VIEWPORT_DEBUG';
 
       // 1. Extract AXIS lines for clustering
       // Extract from all layers containing 'AXIS' (case-insensitive)
@@ -471,19 +559,21 @@ const App: React.FC = () => {
 
       // 2. Extract potential title Text and Lines (excluding AXIS text for title search, maintaining safe exclusion)
       const allText = extractEntities(activeProject.data.layers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
-          .filter(e => e.type === EntityType.TEXT && !e.layer.toUpperCase().includes('AXIS'));
+          .filter(e => e.type === EntityType.TEXT);
       
+      // Include LWPOLYLINE in lines to detect polyline underlines
       const allLines = extractEntities(activeProject.data.layers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
-          .filter(e => e.type === EntityType.LINE);
+          .filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
 
       // 3. Cluster Axis lines
       const clusters = groupEntitiesByProximity(axisLines, 5000); // 5000mm tolerance for grouping
       
       const newEntities: DxfEntity[] = [];
+      const debugEntities: DxfEntity[] = [];
 
       clusters.forEach((box, i) => {
           // Find Title
-          const title = findTitleForBounds(box, allText, allLines);
+          const { title, scannedBounds } = findTitleForBounds(box, allText, allLines);
           const label = title || `BLOCK ${i + 1}`;
 
           // Create Rectangle
@@ -508,6 +598,21 @@ const App: React.FC = () => {
               start: { x: box.minX, y: box.maxY + 500 },
               radius: 1000 // Large text
           });
+
+          // Create Debug Rings
+          scannedBounds.forEach(sb => {
+              debugEntities.push({
+                  type: EntityType.LWPOLYLINE,
+                  layer: debugLayer,
+                  closed: true,
+                  vertices: [
+                      { x: sb.minX, y: sb.minY },
+                      { x: sb.maxX, y: sb.minY },
+                      { x: sb.maxX, y: sb.maxY },
+                      { x: sb.minX, y: sb.maxY }
+                  ]
+              });
+          });
       });
 
       if (newEntities.length === 0) {
@@ -515,6 +620,9 @@ const App: React.FC = () => {
           return;
       }
 
+      // Add debug layer first
+      updateActiveProjectData(debugLayer, debugEntities, '#444444', [], false);
+      // Add result layer
       updateActiveProjectData(resultLayer, newEntities, '#FF00FF', ['AXIS'], false);
       alert(`Found ${clusters.length} regions.`);
   };
@@ -863,15 +971,61 @@ const App: React.FC = () => {
                 >
                   <Box size={14} className="mr-1"/> Walls
                 </Button>
-                <Button 
-                  onClick={calculateSplitRegions} 
-                  disabled={!activeProject || isLoading} 
-                  variant="primary" 
-                  className="w-full justify-center text-xs bg-purple-600 hover:bg-purple-700"
-                  title="Split View / Identify Blocks"
-                >
-                  <Grid size={14} className="mr-1"/> Split View
-                </Button>
+                
+                {/* Search / Split Group */}
+                <div className="col-span-2 space-y-2">
+                    <Button 
+                      onClick={calculateSplitRegions} 
+                      disabled={!activeProject || isLoading} 
+                      variant="primary" 
+                      className="w-full justify-center text-xs bg-purple-600 hover:bg-purple-700"
+                      title="Split View / Identify Blocks"
+                    >
+                      <Grid size={14} className="mr-1"/> Split View
+                    </Button>
+                </div>
+
+                <div className="col-span-2">
+                   <p className="text-[10px] text-slate-500 mb-1">GLOBAL TEXT SEARCH</p>
+                   <div className="flex items-center gap-1">
+                       <div className="relative flex-1">
+                           <input 
+                              type="text"
+                              value={searchText}
+                              onChange={handleSearchChange}
+                              onKeyDown={handleKeyDown}
+                              placeholder="Search text..."
+                              className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500 outline-none pr-6"
+                           />
+                           {searchResults.length > 0 ? (
+                               <span className="absolute right-7 top-1.5 text-[10px] text-slate-400">
+                                   {currentResultIdx + 1}/{searchResults.length}
+                               </span>
+                           ) : searchText && (
+                               <button 
+                                 onClick={handleClearSearch}
+                                 className="absolute right-1 top-1 p-0.5 text-slate-400 hover:text-white"
+                               >
+                                 <X size={12} />
+                               </button>
+                           )}
+                           {searchResults.length > 0 && (
+                               <button 
+                                 onClick={handleClearSearch}
+                                 className="absolute right-1 top-1 p-0.5 text-slate-400 hover:text-white"
+                               >
+                                 <X size={12} />
+                               </button>
+                           )}
+                       </div>
+                       <button onClick={handlePrevResult} disabled={searchResults.length === 0} className="p-1 bg-slate-800 rounded hover:bg-slate-700 disabled:opacity-30">
+                           <ChevronUp size={14} />
+                       </button>
+                       <button onClick={handleNextResult} disabled={searchResults.length === 0} className="p-1 bg-slate-800 rounded hover:bg-slate-700 disabled:opacity-30">
+                           <ChevronDown size={14} />
+                       </button>
+                   </div>
+                </div>
             </div>
 
             <div className="h-px bg-slate-800 my-2"></div>
@@ -947,6 +1101,9 @@ const App: React.FC = () => {
                activeLayers={activeProject ? activeProject.activeLayers : new Set()} 
                layerColors={layerColors}
                filledLayers={activeProject ? activeProject.filledLayers : new Set()}
+               targetBounds={currentResultIdx >= 0 ? searchResults[currentResultIdx].bounds : null}
+               highlights={searchResults}
+               activeHighlightIndex={currentResultIdx}
                onRef={(ref) => canvasRef.current = ref} 
              />
              

@@ -1,4 +1,4 @@
-import { DxfData, DxfEntity, EntityType, LayerColors } from '../types';
+import { DxfData, DxfEntity, EntityType, LayerColors, Bounds, SearchResult } from '../types';
 
 interface RenderOptions {
     ctx: CanvasRenderingContext2D;
@@ -10,6 +10,8 @@ interface RenderOptions {
     width: number;
     height: number;
     isPdfExport?: boolean;
+    highlights?: SearchResult[];
+    activeHighlightIndex?: number;
 }
 
 export const renderDxfToCanvas = ({
@@ -21,7 +23,9 @@ export const renderDxfToCanvas = ({
     transform,
     width,
     height,
-    isPdfExport = false
+    isPdfExport = false,
+    highlights,
+    activeHighlightIndex
 }: RenderOptions) => {
     // 1. Background Setup
     if (isPdfExport) {
@@ -226,8 +230,6 @@ export const renderDxfToCanvas = ({
     // --- EXECUTION ---
 
     // 1. Fill Pass (Off-screen buffer)
-    // We create a temporary canvas to render ALL filled layers opaquely.
-    // This merges intersections (T-junctions, Corners) into a single silhouette.
     if (filledLayers && filledLayers.size > 0) {
         const offCanvas = document.createElement('canvas');
         offCanvas.width = width;
@@ -238,18 +240,52 @@ export const renderDxfToCanvas = ({
             applyTransform(offCtx);
             drawFillsRecursive(offCtx, data.entities, '0');
             
-            // Draw the buffer onto the main canvas with global opacity
             ctx.save();
-            ctx.globalAlpha = 0.4; // Unified transparency
+            ctx.globalAlpha = 0.4;
             ctx.drawImage(offCanvas, 0, 0);
             ctx.restore();
         }
     }
 
     // 2. Stroke Pass (Main Canvas)
-    // Draw all outlines and non-filled entities on top for crisp edges.
     ctx.save();
     applyTransform(ctx);
     drawStrokesRecursive(ctx, data.entities, '0', 1.0);
+    
+    // 3. Highlight Pass (Search Results)
+    if (highlights && highlights.length > 0) {
+        highlights.forEach((h, i) => {
+            const isActive = i === activeHighlightIndex;
+            ctx.save();
+            
+            // Move to insertion point (which bounds.minX/minY represents for Text)
+            ctx.translate(h.bounds.minX, h.bounds.minY);
+            
+            // Apply text rotation if present
+            if (h.rotation) {
+                // Rotation in DXF is CCW. In Y-Up coords, rotate(rad) handles this correctly.
+                ctx.rotate(h.rotation * Math.PI / 180);
+            }
+
+            const w = h.bounds.maxX - h.bounds.minX;
+            const hVal = h.bounds.maxY - h.bounds.minY;
+            
+            ctx.fillStyle = isActive ? 'rgba(255, 165, 0, 0.7)' : 'rgba(255, 255, 0, 0.35)'; // Orange for active, Yellow for others
+            
+            ctx.beginPath();
+            // Draw box from origin (0,0) to (w, h) in the local rotated space
+            ctx.rect(0, 0, w, hVal);
+            ctx.fill();
+            
+            if (isActive) {
+                ctx.lineWidth = 2 / transform.k;
+                ctx.strokeStyle = '#ef4444'; // Red-500
+                ctx.stroke();
+            }
+            
+            ctx.restore();
+        });
+    }
+
     ctx.restore();
 };

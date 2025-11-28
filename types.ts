@@ -69,4 +69,9 @@ export interface Bounds {
   maxY: number;
 }
 
+export interface SearchResult {
+  bounds: Bounds;
+  rotation: number;
+}
+
 export type LayerColors = { [key: string]: string };
