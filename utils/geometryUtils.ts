@@ -761,7 +761,9 @@ export const findTitleForBounds = (
     const step = 500; // Step size in CAD units (mm)
     const scannedBounds: Bounds[] = [];
     
-    for (let currentMargin = 0; currentMargin <= maxMargin; currentMargin += step) {
+    // Start from the first expanded ring (skip margin 0 to avoid searching inside the original box)
+    for (let currentMargin = step; currentMargin <= maxMargin; currentMargin += step) {
+
         const innerMargin = Math.max(0, currentMargin - step);
         
         const outerBox = {
