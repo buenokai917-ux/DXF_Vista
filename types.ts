@@ -81,3 +81,14 @@ export interface ViewportRegion {
 }
 
 export type LayerColors = { [key: string]: string };
+
+export type AnalysisDomain = 'STRUCTURE' | 'LANDSCAPE' | 'ELECTRICAL';
+
+export interface ProjectFile {
+  id: string;
+  name: string;
+  data: DxfData;
+  activeLayers: Set<string>;
+  filledLayers: Set<string>;
+  splitRegions: ViewportRegion[] | null;
+}

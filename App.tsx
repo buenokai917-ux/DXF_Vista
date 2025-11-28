@@ -1,12 +1,15 @@
+
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { jsPDF } from 'jspdf';
 import { parseDxf } from './utils/dxfParser';
-import { DxfData, LayerColors, DxfEntity, EntityType, Point, Bounds, SearchResult, ViewportRegion } from './types';
-import { getBeamProperties, getCenter, transformPoint, findParallelPolygons, calculateLength, calculateTotalBounds, groupEntitiesByProximity, findTitleForBounds, getEntityBounds, parseViewportTitle, getGridIntersections, calculateMergeVector } from './utils/geometryUtils';
+import { DxfData, LayerColors, DxfEntity, EntityType, Point, Bounds, SearchResult, ViewportRegion, AnalysisDomain, ProjectFile } from './types';
+import { calculateTotalBounds, getEntityBounds } from './utils/geometryUtils';
+import { extractEntities } from './utils/dxfHelpers';
 import { Viewer } from './components/Viewer';
 import { Button } from './components/Button';
 import { renderDxfToCanvas } from './utils/renderUtils';
-import { Upload, Layers, Download, Image as ImageIcon, FileText, Settings, X, RefreshCw, Search, Calculator, Square, Box, Plus, File as FileIcon, Grid, ChevronUp, ChevronDown, GitMerge } from 'lucide-react';
+import { AnalysisSidebar } from './components/AnalysisSidebar';
+import { Layers, Image as ImageIcon, FileText, Settings, X, RefreshCw, Search, Plus, File as FileIcon, ChevronUp, ChevronDown } from 'lucide-react';
 
 // Standard CAD Colors (Index 1-7 + Grays + Common)
 const CAD_COLORS = [
@@ -24,16 +27,8 @@ const CAD_COLORS = [
   '#800080', // Purple
 ];
 
-interface ProjectFile {
-  id: string;
-  name: string;
-  data: DxfData;
-  activeLayers: Set<string>;
-  filledLayers: Set<string>;
-  splitRegions: ViewportRegion[] | null;
-}
-
 const App: React.FC = () => {
+  // --- STATE ---
   const [projects, setProjects] = useState<ProjectFile[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [layerColors, setLayerColors] = useState<LayerColors>({});
@@ -42,6 +37,9 @@ const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [pickingColorLayer, setPickingColorLayer] = useState<string | null>(null);
   
+  // Analysis State
+  const [analysisDomain, setAnalysisDomain] = useState<AnalysisDomain>('STRUCTURE');
+
   // Search State
   const [searchText, setSearchText] = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
@@ -52,6 +50,8 @@ const App: React.FC = () => {
   const activeProject = useMemo(() => 
     projects.find(p => p.id === activeProjectId) || null
   , [projects, activeProjectId]);
+
+  // --- DATA LOADING ---
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const uploadedFiles = event.target.files;
@@ -215,104 +215,10 @@ const App: React.FC = () => {
     }));
   };
 
-  const filteredLayers = useMemo(() => {
-    if (!activeProject) return [];
-    if (!layerSearchTerm) return activeProject.data.layers;
-    return activeProject.data.layers.filter(l => l.toLowerCase().includes(layerSearchTerm.toLowerCase()));
-  }, [activeProject, layerSearchTerm]);
-
-  // Recursively extract entities from layers, transforming block coordinates to world space
-  const extractEntities = (targetLayers: string[], rootEntities: DxfEntity[], blocks: Record<string, DxfEntity[]>, blockBasePoints: Record<string, Point>): DxfEntity[] => {
-      const extracted: DxfEntity[] = [];
-      const recurse = (entities: DxfEntity[], transform: { scale: Point, rotation: number, translation: Point }, parentLayer: string | null) => {
-          entities.forEach(ent => {
-             // Layer Inheritance: If entity is on Layer 0, use parent layer (if inside a block)
-             const effectiveLayer = (ent.layer === '0' && parentLayer) ? parentLayer : ent.layer;
-
-             // 1. Recursion into Blocks
-             if (ent.type === EntityType.INSERT && ent.blockName && blocks[ent.blockName]) {
-                 const basePoint = blockBasePoints[ent.blockName] || { x: 0, y: 0 };
-                 
-                 // Handle MINSERT (rows/cols)
-                 const rows = ent.rowCount || 1;
-                 const cols = ent.columnCount || 1;
-                 const rSpace = ent.rowSpacing || 0;
-                 const cSpace = ent.columnSpacing || 0;
-                 
-                 const baseScaleX = transform.scale.x * (ent.scale?.x || 1);
-                 const baseScaleY = transform.scale.y * (ent.scale?.y || 1);
-                 const baseRotation = transform.rotation + (ent.rotation || 0);
-
-                 for (let r = 0; r < rows; r++) {
-                     for (let c = 0; c < cols; c++) {
-                         let gridX = c * cSpace;
-                         let gridY = r * rSpace;
-                         let rotGridX = gridX;
-                         let rotGridY = gridY;
-
-                         if (ent.rotation) {
-                            const rad = ent.rotation * Math.PI / 180;
-                            rotGridX = gridX * Math.cos(rad) - gridY * Math.sin(rad);
-                            rotGridY = gridX * Math.sin(rad) + gridY * Math.cos(rad);
-                         }
-
-                         const localInsX = (ent.start?.x || 0) + rotGridX;
-                         const localInsY = (ent.start?.y || 0) + rotGridY;
-                         const tPos = transformPoint({x: localInsX, y: localInsY}, transform.scale, transform.rotation, transform.translation);
-                         const tBase = transformPoint(basePoint, {x: baseScaleX, y: baseScaleY}, baseRotation, {x:0, y:0});
-                         
-                         const finalTrans = {
-                             x: tPos.x - tBase.x,
-                             y: tPos.y - tBase.y
-                         };
-
-                         recurse(blocks[ent.blockName!], {
-                            scale: { x: baseScaleX, y: baseScaleY },
-                            rotation: baseRotation,
-                            translation: finalTrans
-                         }, effectiveLayer);
-                     }
-                 }
-                 return;
-             }
-             // 2. Collection of Target Entities
-             if (targetLayers.includes(effectiveLayer)) {
-                 const worldEnt = { ...ent, layer: effectiveLayer };
-                 if (worldEnt.start) worldEnt.start = transformPoint(worldEnt.start, transform.scale, transform.rotation, transform.translation);
-                 if (worldEnt.end) worldEnt.end = transformPoint(worldEnt.end, transform.scale, transform.rotation, transform.translation);
-                 if (worldEnt.center) worldEnt.center = transformPoint(worldEnt.center, transform.scale, transform.rotation, transform.translation);
-                 if (worldEnt.vertices) {
-                     worldEnt.vertices = worldEnt.vertices.map(v => transformPoint(v, transform.scale, transform.rotation, transform.translation));
-                 }
-                 if (worldEnt.startAngle !== undefined) worldEnt.startAngle += transform.rotation;
-                 if (worldEnt.endAngle !== undefined) worldEnt.endAngle += transform.rotation;
-                 if (worldEnt.measureStart) worldEnt.measureStart = transformPoint(worldEnt.measureStart, transform.scale, transform.rotation, transform.translation);
-                 if (worldEnt.measureEnd) worldEnt.measureEnd = transformPoint(worldEnt.measureEnd, transform.scale, transform.rotation, transform.translation);
-
-                 extracted.push(worldEnt);
-             }
-          });
-      };
-      recurse(rootEntities, { scale: {x:1, y:1}, rotation: 0, translation: {x:0, y:0} }, null);
-      return extracted;
-  };
-
-  const findEntitiesInAllProjects = (layerNamePattern: RegExp): DxfEntity[] => {
-      let results: DxfEntity[] = [];
-      projects.forEach(p => {
-          const matchingLayers = p.data.layers.filter(l => layerNamePattern.test(l));
-          if (matchingLayers.length > 0) {
-              results = results.concat(extractEntities(matchingLayers, p.data.entities, p.data.blocks, p.data.blockBasePoints));
-          }
-      });
-      return results;
-  };
-
-  // --- SEARCH FUNCTIONS ---
+  // --- SEARCH ---
 
   const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
       setSearchText(e.target.value);
-      // If user clears input, clear results
       if (!e.target.value) {
           handleClearSearch();
       }
@@ -329,7 +235,6 @@ const App: React.FC = () => {
       
       setIsLoading(true);
       setTimeout(() => {
-          // Search ALL layers in the active project
           const allEntities = extractEntities(activeProject.data.layers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
           
           const query = searchText.toLowerCase();
@@ -349,13 +254,11 @@ const App: React.FC = () => {
               }
           });
 
-          // Sort matches top-left to bottom-right for consistent navigation
           matches.sort((a, b) => {
-              // Group by rough Y position (lines), then X
               const rowA = Math.floor(a.bounds.minY / 1000);
               const rowB = Math.floor(b.bounds.minY / 1000);
-              if (rowA !== rowB) return rowB - rowA; // Top to bottom (higher Y is top in CAD typically)
-              return a.bounds.minX - b.bounds.minX; // Left to right
+              if (rowA !== rowB) return rowB - rowA; 
+              return a.bounds.minX - b.bounds.minX;
           });
 
           setSearchResults(matches);
@@ -389,463 +292,7 @@ const App: React.FC = () => {
   };
 
 
-  const calculateBeams = () => {
-    if (!activeProject) return;
-
-    const currentData = activeProject.data;
-    const beamTextLayers = currentData.layers.filter(l => l.includes('梁筋'));
-    const beamLayers = ['BEAM', 'BEAM_CON'];
-    const entities = extractEntities(beamLayers, currentData.entities, currentData.blocks, currentData.blockBasePoints);
-    
-    // Include calculated layers (WALL_CALC, COLU_CALC) in obstacles to ensure splitting happens against the "clean" geometry if it exists.
-    let obstacles = extractEntities(['WALL', 'COLU', 'COLUMN', 'WALL_CALC', 'COLU_CALC'], currentData.entities, currentData.blocks, currentData.blockBasePoints);
-    if (obstacles.length < 10) {
-         obstacles = findEntitiesInAllProjects(/wall|colu|column|柱|墙/i);
-    }
-
-    let axisEntities = extractEntities(['AXIS'], currentData.entities, currentData.blocks, currentData.blockBasePoints).filter(e => e.type === EntityType.LINE);
-    if (axisEntities.length === 0) {
-        axisEntities = findEntitiesInAllProjects(/^AXIS$/i).filter(e => e.type === EntityType.LINE);
-    }
-    
-    let textEntities = extractEntities(beamTextLayers, currentData.entities, currentData.blocks, currentData.blockBasePoints).filter(e => e.type === EntityType.TEXT);
-    if (textEntities.length === 0) {
-        textEntities = findEntitiesInAllProjects(/梁筋/).filter(e => e.type === EntityType.TEXT);
-    }
-
-    // --- NEW LOGIC: Extract Valid Beam Widths from Text ---
-    const validWidths = new Set<number>();
-    textEntities.forEach(t => {
-        if (!t.text) return;
-        const matches = t.text.match(/(\d+)[xX×]\d+/);
-        if (matches) {
-            const w = parseInt(matches[1], 10);
-            if (!isNaN(w) && w > 0) {
-                validWidths.add(w);
-            }
-        }
-    });
-    
-    const foundWidthsArray = Array.from(validWidths).sort((a,b) => a-b);
-    
-    const resultLayer = 'BEAM_CALC';
-    const contextLayers = ['WALL', 'COLU', 'AXIS', ...beamTextLayers];
-
-    const newEntities: DxfEntity[] = [];
-    const lines = entities.filter(e => e.type === EntityType.LINE);
-    const polylines = entities.filter(e => e.type === EntityType.LWPOLYLINE && e.closed);
-
-    // Pass validWidths to the algorithm
-    const generatedPolygons = findParallelPolygons(lines, 1200, resultLayer, obstacles, axisEntities, textEntities, 'BEAM', validWidths);
-    const existingPolygons = polylines.map(p => ({ ...p, layer: resultLayer }));
-
-    const allBeams = [...generatedPolygons, ...existingPolygons];
-
-    allBeams.forEach(ent => {
-        const props = getBeamProperties(ent);
-        if (props.length > 500) {
-            newEntities.push(ent);
-            const center = getCenter(ent);
-            if (center) {
-                newEntities.push({
-                    type: EntityType.TEXT,
-                    layer: resultLayer,
-                    start: center,
-                    text: `L=${Math.round(props.length)}`,
-                    radius: 250,
-                    startAngle: props.angle % 180 === 0 ? 0 : props.angle
-                });
-            }
-        }
-    });
-
-    if (newEntities.length === 0) {
-        alert("No calculable beams found. (Note: Valid beams require pairs of lines matching text annotations like '200x500').");
-        return;
-    }
-
-    // ENABLE FILL for beams
-    updateActiveProjectData(resultLayer, newEntities, '#00FF00', contextLayers, true);
-    
-    let msg = `Calculated ${allBeams.length} beam segments.`;
-    if (validWidths.size > 0) {
-        msg += `\nUsed widths: ${foundWidthsArray.join(', ')}`;
-    }
-    alert(msg);
-  };
-
-  const calculateWalls = () => {
-    if (!activeProject) return;
-    
-    const targetLayers = activeProject.data.layers.filter(l => /wall|墙/i.test(l));
-    const columnObstacles = findEntitiesInAllProjects(/colu|column|柱/i);
-
-    // EXTRACT AXIS ENTITIES & EXPLODE POLYLINES
-    const rawAxisEntities = extractEntities(['AXIS'], activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
-    const axisLines: DxfEntity[] = [];
-    
-    rawAxisEntities.forEach(ent => {
-        if (ent.type === EntityType.LINE && ent.start && ent.end) {
-            axisLines.push(ent);
-        } else if (ent.type === EntityType.LWPOLYLINE && ent.vertices && ent.vertices.length > 1) {
-            const verts = ent.vertices;
-            for (let i = 0; i < verts.length - 1; i++) {
-                axisLines.push({ type: EntityType.LINE, layer: ent.layer, start: verts[i], end: verts[i+1] });
-            }
-            if (ent.closed && verts.length > 2) {
-                axisLines.push({ type: EntityType.LINE, layer: ent.layer, start: verts[verts.length-1], end: verts[0] });
-            }
-        }
-    });
-    
-    if (axisLines.length === 0) {
-        const otherAxis = findEntitiesInAllProjects(/^AXIS$/i);
-        otherAxis.forEach(ent => {
-             if (ent.type === EntityType.LINE) axisLines.push(ent);
-        });
-    }
-
-    const resultLayer = 'WALL_CALC';
-    const contextLayers = ['AXIS', 'COLU', 'BEAM_CALC'];
-
-    const rawWallEntities = extractEntities(targetLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
-    
-    const candidateLines: DxfEntity[] = [];
-    const existingClosedPolygons: DxfEntity[] = [];
-
-    rawWallEntities.forEach(ent => {
-        // PRESERVE EXISTING CLOSED SHAPES (e.g. Irregular Core Walls, C-shapes)
-        if (ent.type === EntityType.LWPOLYLINE && ent.closed && ent.vertices && ent.vertices.length > 2) {
-             existingClosedPolygons.push({ ...ent, layer: resultLayer });
-        } else {
-             if (ent.type === EntityType.LINE && ent.start && ent.end) {
-                 candidateLines.push(ent);
-             } else if (ent.type === EntityType.LWPOLYLINE && ent.vertices && ent.vertices.length > 1) {
-                const verts = ent.vertices;
-                for (let i = 0; i < verts.length; i++) {
-                    if (ent.closed && i === verts.length - 1) {
-                         const p1 = verts[i];
-                         const p2 = verts[0];
-                         candidateLines.push({ type: EntityType.LINE, layer: ent.layer, start: p1, end: p2 });
-                    } else if (i < verts.length - 1) {
-                        const p1 = verts[i];
-                        const p2 = verts[i + 1];
-                        candidateLines.push({ type: EntityType.LINE, layer: ent.layer, start: p1, end: p2 });
-                    }
-                }
-             }
-        }
-    });
-
-    const allObstacles = [...columnObstacles, ...rawWallEntities];
-
-    const generatedWalls = findParallelPolygons(candidateLines, 600, resultLayer, allObstacles, axisLines, [], 'WALL');
-    
-    const newEntities: DxfEntity[] = [...generatedWalls, ...existingClosedPolygons];
-
-    if (newEntities.length === 0) {
-        alert("No valid wall segments found (Must have corresponding Axis line).");
-        return;
-    }
-
-    // Auto-fill walls to merge overlaps visually
-    updateActiveProjectData(resultLayer, newEntities, '#94a3b8', contextLayers, true); 
-    alert(`Marked ${newEntities.length} wall segments.`);
-  };
-
-  const calculateColumns = () => {
-    if (!activeProject) return;
-
-    const targetLayers = activeProject.data.layers.filter(l => /colu|column|柱/i.test(l));
-    const resultLayer = 'COLU_CALC';
-    const contextLayers = ['AXIS', 'WALL_CALC', 'BEAM_CALC'];
-
-    const rawEntities = extractEntities(targetLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
-
-    const columnEntities = rawEntities.filter(e => 
-        (e.type === EntityType.LWPOLYLINE && e.closed) ||
-        e.type === EntityType.CIRCLE ||
-        e.type === EntityType.INSERT
-    ).map(e => ({...e, layer: resultLayer}));
-
-    if (columnEntities.length === 0) {
-        alert("No valid column objects found on column layers.");
-        return;
-    }
-
-    // ENABLE FILL for columns
-    updateActiveProjectData(resultLayer, columnEntities, '#f59e0b', contextLayers, true);
-    alert(`Marked ${columnEntities.length} columns.`);
-  };
-
-  const calculateSplitRegions = (suppressAlert = false): ViewportRegion[] | null => {
-      if (!activeProject) return null;
-      const resultLayer = 'VIEWPORT_CALC';
-      const debugLayer = 'VIEWPORT_DEBUG';
-
-      // 1. Extract AXIS lines for clustering
-      const axisLayers = activeProject.data.layers.filter(l => l.toUpperCase().includes('AXIS'));
-      const axisLines = extractEntities(axisLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
-          .filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
-
-      if (axisLines.length === 0) {
-          if (!suppressAlert) alert("No AXIS lines found to determine regions.");
-          return null;
-      }
-
-      // 2. Extract potential title Text and Lines
-      // Need ALL lines including polylines for title underline check
-      const allText = extractEntities(activeProject.data.layers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
-          .filter(e => e.type === EntityType.TEXT);
-      
-      const allLines = extractEntities(activeProject.data.layers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
-          .filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
-
-      // 3. Cluster Axis lines
-      const clusters = groupEntitiesByProximity(axisLines, 5000); // 5000mm tolerance for grouping
-      
-      const newEntities: DxfEntity[] = [];
-      const debugEntities: DxfEntity[] = [];
-      const regions: ViewportRegion[] = [];
-
-      clusters.forEach((box, i) => {
-          // Find Title
-          const { title, scannedBounds } = findTitleForBounds(box, allText, allLines);
-          const label = title || `BLOCK ${i + 1}`;
-
-          // Save Region Data
-          regions.push({
-              bounds: box,
-              title: label,
-              info: parseViewportTitle(label)
-          });
-
-          // Create Rectangle
-          const rect: DxfEntity = {
-              type: EntityType.LWPOLYLINE,
-              layer: resultLayer,
-              closed: true,
-              vertices: [
-                  { x: box.minX, y: box.minY },
-                  { x: box.maxX, y: box.minY },
-                  { x: box.maxX, y: box.maxY },
-                  { x: box.minX, y: box.maxY }
-              ]
-          };
-          newEntities.push(rect);
-
-          // Create Label Text (Top Left corner of box)
-          newEntities.push({
-              type: EntityType.TEXT,
-              layer: resultLayer,
-              text: label,
-              start: { x: box.minX, y: box.maxY + 500 },
-              radius: 1000 // Large text
-          });
-
-          // Create Debug Rings
-          scannedBounds.forEach(sb => {
-              debugEntities.push({
-                  type: EntityType.LWPOLYLINE,
-                  layer: debugLayer,
-                  closed: true,
-                  vertices: [
-                      { x: sb.minX, y: sb.minY },
-                      { x: sb.maxX, y: sb.minY },
-                      { x: sb.maxX, y: sb.maxY },
-                      { x: sb.minX, y: sb.maxY }
-                  ]
-              });
-          });
-      });
-
-      if (newEntities.length === 0) {
-          if (!suppressAlert) alert("Could not determine split regions.");
-          return null;
-      }
-
-      // Persist regions and add visualization layers
-      const updatedData = {
-          ...activeProject.data,
-          entities: [...activeProject.data.entities, ...newEntities, ...debugEntities],
-          layers: [...new Set([...activeProject.data.layers, resultLayer, debugLayer])]
-      };
-
-      const newColors = { ...layerColors, [resultLayer]: '#FF00FF', [debugLayer]: '#444444' };
-      setLayerColors(newColors);
-
-      setProjects(prev => prev.map(p => {
-          if (p.id === activeProject.id) {
-               const newActive = new Set(p.activeLayers);
-               newActive.add(resultLayer);
-               // Do not activate debug layer by default
-               return { ...p, data: updatedData, splitRegions: regions, activeLayers: newActive };
-          }
-          return p;
-      }));
-
-      if (!suppressAlert) alert(`Found ${clusters.length} regions.`);
-      return regions;
-  };
-
-  const handleMergeViews = () => {
-      if (!activeProject) return;
-      
-      let regions = activeProject.splitRegions;
-      
-      // If regions not calculated yet, calculate them first
-      if (!regions || regions.length === 0) {
-          regions = calculateSplitRegions(true); // Suppress alert for implicit split
-      }
-
-      if (!regions || regions.length === 0) {
-          alert("Could not identify regions to merge.");
-          return;
-      }
-      
-      const resultLayer = 'MERGE_LABEL';
-      const axisLayers = activeProject.data.layers.filter(l => l.toUpperCase().includes('AXIS'));
-      const axisLines = extractEntities(axisLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
-          .filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
-
-      // Group by prefix (or title if no prefix)
-      const groups: Record<string, ViewportRegion[]> = {};
-      regions.forEach(r => {
-          const key = r.info ? r.info.prefix : r.title;
-          if (!groups[key]) groups[key] = [];
-          groups[key].push(r);
-      });
-
-      const mergedEntities: DxfEntity[] = [];
-      const allEntities = extractEntities(activeProject.data.layers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
-
-      let mergedCount = 0;
-
-      // Identify Annotation Layers
-      const isLabelLayer = (name: string): boolean => {
-          const u = name.toUpperCase();
-          return u.includes('标注') || u.includes('DIM') || u.includes('LABEL') || /^Z[\u4e00-\u9fa5]/.test(name);
-      };
-
-      // Helper to check if a point is inside a bounds
-      const isPointInBounds = (p: Point, b: Bounds) => {
-          return p.x >= b.minX && p.x <= b.maxX && p.y >= b.minY && p.y <= b.maxY;
-      };
-
-      // Helper to determine if an entity belongs to a view region based on Start/Measure points
-      const shouldIncludeEntity = (ent: DxfEntity, bounds: Bounds): boolean => {
-           // Priority 1: Check Insertion/Start Point (Text, Blocks, Lines, Dims)
-           if (ent.start && isPointInBounds(ent.start, bounds)) return true;
-
-           // Priority 2: Check Dimension specific measurement points
-           if (ent.type === EntityType.DIMENSION) {
-               if (ent.measureStart && isPointInBounds(ent.measureStart, bounds)) return true;
-               if (ent.measureEnd && isPointInBounds(ent.measureEnd, bounds)) return true;
-               if (ent.end && isPointInBounds(ent.end, bounds)) return true; // Dim Text location
-           }
-
-           // Priority 3: Fallback to geometric center (Original behavior)
-           const b = getEntityBounds(ent);
-           if (b) {
-               const cx = (b.minX + b.maxX)/2;
-               const cy = (b.minY + b.maxY)/2;
-               if (cx >= bounds.minX && cx <= bounds.maxX &&
-                   cy >= bounds.minY && cy <= bounds.maxY) return true;
-           }
-           return false;
-      };
-
-      Object.entries(groups).forEach(([prefix, views]) => {
-          // Sort by Index (default to 1 if info is null)
-          views.sort((a, b) => (a.info?.index ?? 1) - (b.info?.index ?? 1));
-          const baseView = views[0]; // Base view (Index 1 usually)
-          
-          // 1. Process Base View: Copy Labels to Unified Layer
-          allEntities.forEach(ent => {
-             if (shouldIncludeEntity(ent, baseView.bounds)) {
-                 if (isLabelLayer(ent.layer)) {
-                     const clone = { ...ent, layer: resultLayer };
-                     mergedEntities.push(clone);
-                 }
-             }
-          });
-          
-          // 2. Process Target Views: Align & Merge Labels
-          if (views.length > 1) {
-              const baseIntersections = getGridIntersections(baseView.bounds, axisLines);
-
-              for (let i = 1; i < views.length; i++) {
-                  const targetView = views[i];
-                  const targetIntersections = getGridIntersections(targetView.bounds, axisLines);
-                  
-                  const vec = calculateMergeVector(baseIntersections, targetIntersections);
-                  
-                  if (vec) {
-                      // Find entities inside target bounds
-                      allEntities.forEach(ent => {
-                          if (shouldIncludeEntity(ent, targetView.bounds)) {
-                              if (isLabelLayer(ent.layer)) {
-                                  // Clone and Translate
-                                  const clone = { ...ent };
-                                  clone.layer = resultLayer;
-                                  
-                                  if (clone.start) clone.start = { x: clone.start.x + vec.x, y: clone.start.y + vec.y };
-                                  if (clone.end) clone.end = { x: clone.end.x + vec.x, y: clone.end.y + vec.y };
-                                  if (clone.center) clone.center = { x: clone.center.x + vec.x, y: clone.center.y + vec.y };
-                                  if (clone.vertices) clone.vertices = clone.vertices.map(v => ({ x: v.x + vec.x, y: v.y + vec.y }));
-                                  if (clone.measureStart) clone.measureStart = { x: clone.measureStart.x + vec.x, y: clone.measureStart.y + vec.y };
-                                  if (clone.measureEnd) clone.measureEnd = { x: clone.measureEnd.x + vec.x, y: clone.measureEnd.y + vec.y };
-
-                                  mergedEntities.push(clone);
-                              }
-                          }
-                      });
-                      mergedCount++;
-                  }
-              }
-          }
-          // If views.length === 1, we still populated mergedEntities with base labels, effectively preparing it for calculation.
-          mergedCount++;
-      });
-
-      if (mergedEntities.length === 0) {
-          alert("No label entities found to merge.");
-          return;
-      }
-      
-      updateActiveProjectData(resultLayer, mergedEntities, '#00FFFF', [], false); // Cyan for Merged Labels
-      alert(`Consolidated labels from ${mergedCount} view groups into '${resultLayer}'.`);
-  };
-
-  const updateActiveProjectData = (resultLayer: string, newEntities: DxfEntity[], color: string, contextLayers: string[], fillLayer: boolean) => {
-      if (!activeProject) return;
-      
-      const updatedData = {
-          ...activeProject.data,
-          entities: [...activeProject.data.entities, ...newEntities],
-          layers: activeProject.data.layers.includes(resultLayer) ? activeProject.data.layers : [resultLayer, ...activeProject.data.layers]
-      };
-
-      setLayerColors(prev => ({ ...prev, [resultLayer]: color }));
-
-      setProjects(prev => prev.map(p => {
-          if (p.id === activeProject.id) {
-              const newActive = new Set(p.activeLayers);
-              newActive.add(resultLayer);
-              contextLayers.forEach(l => {
-                  if (updatedData.layers.includes(l)) newActive.add(l);
-              });
-              
-              const newFilled = new Set(p.filledLayers);
-              if (fillLayer) {
-                  newFilled.add(resultLayer);
-              }
-
-              return { ...p, data: updatedData, activeLayers: newActive, filledLayers: newFilled };
-          }
-          return p;
-      }));
-  };
+  // --- EXPORT ---
 
   const generateExportCanvas = (): HTMLCanvasElement | null => {
       if (!activeProject) return null;
@@ -979,6 +426,12 @@ const App: React.FC = () => {
       });
   };
 
+  const filteredLayers = useMemo(() => {
+    if (!activeProject) return [];
+    if (!layerSearchTerm) return activeProject.data.layers;
+    return activeProject.data.layers.filter(l => l.toLowerCase().includes(layerSearchTerm.toLowerCase()));
+  }, [activeProject, layerSearchTerm]);
+
   return (
     <div className="flex h-screen w-full overflow-hidden bg-slate-950 text-slate-100">
       
@@ -1011,8 +464,19 @@ const App: React.FC = () => {
            </label>
         </div>
 
+        {/* ANALYSIS SIDEBAR */}
+        <AnalysisSidebar 
+            activeProject={activeProject}
+            projects={projects}
+            isLoading={isLoading}
+            analysisDomain={analysisDomain}
+            setAnalysisDomain={setAnalysisDomain}
+            setProjects={setProjects}
+            setLayerColors={setLayerColors}
+        />
+
         {/* Layer List Area */}
-        <div className="flex-1 overflow-y-auto p-4 flex flex-col">
+        <div className="flex-1 overflow-y-auto p-4 flex flex-col min-h-0">
           <div className="flex items-center justify-between mb-2">
             <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-2">
               <Layers size={14} /> Layers
@@ -1049,7 +513,7 @@ const App: React.FC = () => {
               No file selected
             </div>
           ) : (
-            <div className="space-y-1 overflow-y-auto flex-1 pr-1">
+            <div className="space-y-1 overflow-y-auto flex-1 pr-1 custom-scrollbar">
               {filteredLayers.length === 0 && (
                 <div className="text-xs text-slate-500 text-center py-4">No matching layers</div>
               )}
@@ -1110,64 +574,10 @@ const App: React.FC = () => {
           )}
         </div>
 
-        {/* Action Buttons */}
+        {/* Global Tools Footer */}
         <div className="p-4 border-t border-slate-800 space-y-3 shrink-0 bg-slate-900 z-10">
-            <p className="text-xs text-slate-500 font-medium mb-2">ANALYSIS (Active Tab)</p>
-            <div className="grid grid-cols-2 gap-2">
-                <Button 
-                  onClick={calculateBeams} 
-                  disabled={!activeProject || isLoading} 
-                  variant="primary" 
-                  className="w-full justify-center text-xs bg-green-600 hover:bg-green-700"
-                  title="Calculate Beams using All Loaded Files"
-                >
-                  <Calculator size={14} className="mr-1"/> Beams
-                </Button>
-                <Button 
-                  onClick={calculateColumns} 
-                  disabled={!activeProject || isLoading} 
-                  variant="primary" 
-                  className="w-full justify-center text-xs bg-amber-600 hover:bg-amber-700"
-                  title="Mark Columns"
-                >
-                  <Square size={14} className="mr-1"/> Columns
-                </Button>
-                <Button 
-                  onClick={calculateWalls} 
-                  disabled={!activeProject || isLoading} 
-                  variant="primary" 
-                  className="w-full justify-center text-xs bg-slate-600 hover:bg-slate-700"
-                  title="Mark Walls"
-                >
-                  <Box size={14} className="mr-1"/> Walls
-                </Button>
-                
-                {/* Search / Split Group */}
-                <div className="col-span-2 space-y-2">
-                    <div className="grid grid-cols-2 gap-2">
-                        <Button 
-                          onClick={() => calculateSplitRegions()} 
-                          disabled={!activeProject || isLoading} 
-                          variant="primary" 
-                          className="w-full justify-center text-xs bg-purple-600 hover:bg-purple-700"
-                          title="Split View / Identify Blocks"
-                        >
-                          <Grid size={14} className="mr-1"/> Split View
-                        </Button>
-                        <Button 
-                          onClick={handleMergeViews} 
-                          disabled={!activeProject || isLoading} 
-                          variant="primary" 
-                          className="w-full justify-center text-xs bg-indigo-600 hover:bg-indigo-700"
-                          title="Merge Split Views"
-                        >
-                          <GitMerge size={14} className="mr-1"/> Merge Views
-                        </Button>
-                    </div>
-                </div>
-
-                <div className="col-span-2">
-                   <p className="text-[10px] text-slate-500 mb-1">GLOBAL TEXT SEARCH</p>
+            <div className="col-span-2">
+                   <p className="text-[10px] text-slate-500 mb-1 font-medium">GLOBAL TEXT SEARCH</p>
                    <div className="flex items-center gap-1">
                        <div className="relative flex-1">
                            <input 
@@ -1206,7 +616,6 @@ const App: React.FC = () => {
                            <ChevronDown size={14} />
                        </button>
                    </div>
-                </div>
             </div>
 
             <div className="h-px bg-slate-800 my-2"></div>
