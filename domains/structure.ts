@@ -81,6 +81,17 @@ const isPointInBounds = (p: Point, b: Bounds) => {
     return p.x >= b.minX && p.x <= b.maxX && p.y >= b.minY && p.y <= b.maxY;
 };
 
+const expandBounds = (b: Bounds, margin: number): Bounds => ({
+    minX: b.minX - margin,
+    minY: b.minY - margin,
+    maxX: b.maxX + margin,
+    maxY: b.maxY + margin
+});
+
+const boundsOverlap = (a: Bounds, b: Bounds): boolean => {
+    return !(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
+};
+
 const isEntityInBounds = (ent: DxfEntity, boundsList: Bounds[]): boolean => {
     // Check if entity is inside ANY of the base view bounds
     return boundsList.some(b => {
@@ -213,7 +224,7 @@ export const runCalculateBeams = (
     });
 
     if (newEntities.length === 0) {
-        alert("No calculable beams found. (Note: Valid beams require pairs of lines matching text annotations like '200x500').");
+        console.log("No calculable beams found. (Note: Valid beams require pairs of lines matching text annotations like '200x500').");
         return;
     }
 
@@ -223,7 +234,7 @@ export const runCalculateBeams = (
     if (baseBounds) msg += ` (Restricted to ${baseBounds.length} merged regions)`;
     if (validWidths.size > 0) msg += `\nUsed widths: ${foundWidthsArray.join(', ')}`;
     
-    alert(msg);
+    console.log(msg);
 };
 
 export const runCalculateWalls = (
@@ -316,7 +327,7 @@ export const runCalculateWalls = (
     const newEntities: DxfEntity[] = [...generatedWalls, ...existingClosedPolygons];
 
     if (newEntities.length === 0) {
-        alert("No valid wall segments found (Must have corresponding Axis line).");
+        console.log("No valid wall segments found (Must have corresponding Axis line).");
         return;
     }
 
@@ -324,7 +335,7 @@ export const runCalculateWalls = (
     
     let msg = `Marked ${newEntities.length} wall segments.`;
     if (baseBounds) msg += ` (Restricted to ${baseBounds.length} merged regions)`;
-    alert(msg);
+    console.log(msg);
 };
 
 export const runCalculateColumns = (
@@ -350,7 +361,7 @@ export const runCalculateColumns = (
     ).map(e => ({...e, layer: resultLayer}));
 
     if (columnEntities.length === 0) {
-        alert("No valid column objects found on column layers.");
+        console.log("No valid column objects found on column layers.");
         return;
     }
 
@@ -358,7 +369,7 @@ export const runCalculateColumns = (
     
     let msg = `Marked ${columnEntities.length} columns.`;
     if (baseBounds) msg += ` (Restricted to ${baseBounds.length} merged regions)`;
-    alert(msg);
+    console.log(msg);
 };
 
 export const runCalculateSplitRegions = (
@@ -375,7 +386,7 @@ export const runCalculateSplitRegions = (
         .filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
 
     if (axisLines.length === 0) {
-        if (!suppressAlert) alert("No AXIS lines found to determine regions.");
+         if (!suppressAlert) console.log("No AXIS lines found to determine regions.");
         return null;
     }
 
@@ -438,7 +449,7 @@ export const runCalculateSplitRegions = (
     });
 
     if (newEntities.length === 0) {
-        if (!suppressAlert) alert("Could not determine split regions.");
+        if (!suppressAlert) console.log("Could not determine split regions.");
         return null;
     }
 
@@ -460,7 +471,7 @@ export const runCalculateSplitRegions = (
         return p;
     }));
 
-    if (!suppressAlert) alert(`Found ${clusters.length} regions.`);
+    if (!suppressAlert) console.log(`Found ${clusters.length} regions.`);
     return regions;
 };
 
@@ -476,7 +487,7 @@ export const runMergeViews = (
     }
 
     if (!regions || regions.length === 0) {
-        alert("Could not identify regions to merge.");
+        console.log("Could not identify regions to merge.");
         return;
     }
     
@@ -496,21 +507,29 @@ export const runMergeViews = (
     const allEntities = extractEntities(activeProject.data.layers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
 
     let mergedCount = 0;
+    const LABEL_MARGIN = 2000; // allow labels just outside the viewport to be merged
 
-    const isLabelLayer = (name: string): boolean => {
-        const u = name.toUpperCase();
-        return u.includes('标注') || u.includes('DIM') || u.includes('LABEL') || /^Z[\u4e00-\u9fa5]/.test(name);
+    const isLabelEntity = (ent: DxfEntity): boolean => {
+        const u = ent.layer.toUpperCase();
+        // Exclude axis-related layers from labels
+        if (u.includes('AXIS') || u.includes('轴')) return false;
+        const layerLooksLabel = u.includes('标注') || u.includes('DIM') || u.includes('LABEL') || /^Z[\u4e00-\u9fa5]/.test(ent.layer);
+
+        if (ent.type === EntityType.DIMENSION) return true; // dimensions are always labels
+        if (ent.type === EntityType.TEXT || ent.type === EntityType.ATTRIB) return layerLooksLabel;
+        return layerLooksLabel;
     };
 
     const shouldIncludeEntity = (ent: DxfEntity, bounds: Bounds): boolean => {
+         const expanded = expandBounds(bounds, LABEL_MARGIN);
          // Check Start Point
-         if (ent.start && isPointInBounds(ent.start, bounds)) return true;
+         if (ent.start && isPointInBounds(ent.start, expanded)) return true;
          
          // Check Dimension points
          if (ent.type === EntityType.DIMENSION) {
-             if (ent.measureStart && isPointInBounds(ent.measureStart, bounds)) return true;
-             if (ent.measureEnd && isPointInBounds(ent.measureEnd, bounds)) return true;
-             if (ent.end && isPointInBounds(ent.end, bounds)) return true;
+             if (ent.measureStart && isPointInBounds(ent.measureStart, expanded)) return true;
+             if (ent.measureEnd && isPointInBounds(ent.measureEnd, expanded)) return true;
+             if (ent.end && isPointInBounds(ent.end, expanded)) return true;
          }
 
          // Check Bounding Box Center (Fallback)
@@ -518,7 +537,9 @@ export const runMergeViews = (
          if (b) {
              const cx = (b.minX + b.maxX)/2;
              const cy = (b.minY + b.maxY)/2;
-             if (isPointInBounds({x: cx, y: cy}, bounds)) return true;
+             if (isPointInBounds({x: cx, y: cy}, expanded)) return true;
+             // If the entity bbox overlaps the expanded viewport, also include
+             if (boundsOverlap(b, expanded)) return true;
          }
          return false;
     };
@@ -530,11 +551,9 @@ export const runMergeViews = (
         
         // Base View: Keep labels in place
         allEntities.forEach(ent => {
-           if (shouldIncludeEntity(ent, baseView.bounds)) {
-               if (isLabelLayer(ent.layer)) {
-                   const clone = { ...ent, layer: resultLayer };
-                   mergedEntities.push(clone);
-               }
+           if (shouldIncludeEntity(ent, baseView.bounds) && isLabelEntity(ent)) {
+               const clone = { ...ent, layer: resultLayer };
+               mergedEntities.push(clone);
            }
         });
         
@@ -549,20 +568,18 @@ export const runMergeViews = (
                 
                 if (vec) {
                     allEntities.forEach(ent => {
-                        if (shouldIncludeEntity(ent, targetView.bounds)) {
-                            if (isLabelLayer(ent.layer)) {
-                                const clone = { ...ent };
-                                clone.layer = resultLayer;
-                                
-                                if (clone.start) clone.start = { x: clone.start.x + vec.x, y: clone.start.y + vec.y };
-                                if (clone.end) clone.end = { x: clone.end.x + vec.x, y: clone.end.y + vec.y };
-                                if (clone.center) clone.center = { x: clone.center.x + vec.x, y: clone.center.y + vec.y };
-                                if (clone.vertices) clone.vertices = clone.vertices.map(v => ({ x: v.x + vec.x, y: v.y + vec.y }));
-                                if (clone.measureStart) clone.measureStart = { x: clone.measureStart.x + vec.x, y: clone.measureStart.y + vec.y };
-                                if (clone.measureEnd) clone.measureEnd = { x: clone.measureEnd.x + vec.x, y: clone.measureEnd.y + vec.y };
+                        if (shouldIncludeEntity(ent, targetView.bounds) && isLabelEntity(ent)) {
+                            const clone = { ...ent };
+                            clone.layer = resultLayer;
+                            
+                            if (clone.start) clone.start = { x: clone.start.x + vec.x, y: clone.start.y + vec.y };
+                            if (clone.end) clone.end = { x: clone.end.x + vec.x, y: clone.end.y + vec.y };
+                            if (clone.center) clone.center = { x: clone.center.x + vec.x, y: clone.center.y + vec.y };
+                            if (clone.vertices) clone.vertices = clone.vertices.map(v => ({ x: v.x + vec.x, y: v.y + vec.y }));
+                            if (clone.measureStart) clone.measureStart = { x: clone.measureStart.x + vec.x, y: clone.measureStart.y + vec.y };
+                            if (clone.measureEnd) clone.measureEnd = { x: clone.measureEnd.x + vec.x, y: clone.measureEnd.y + vec.y };
 
-                                mergedEntities.push(clone);
-                            }
+                            mergedEntities.push(clone);
                         }
                     });
                     mergedCount++;
@@ -573,10 +590,10 @@ export const runMergeViews = (
     });
 
     if (mergedEntities.length === 0) {
-        alert("No label entities found to merge.");
+        console.log("No label entities found to merge.");
         return;
     }
     
     updateProject(activeProject, setProjects, setLayerColors, resultLayer, mergedEntities, '#00FFFF', [], false); 
-    alert(`Consolidated labels from ${mergedCount} view groups into '${resultLayer}'.`);
+    console.log(`Consolidated labels from ${mergedCount} view groups into '${resultLayer}'.`);
 };
