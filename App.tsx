@@ -2,11 +2,11 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { jsPDF } from 'jspdf';
 import { parseDxf } from './utils/dxfParser';
 import { DxfData, LayerColors, DxfEntity, EntityType, Point, Bounds, SearchResult } from './types';
-import { getBeamProperties, getCenter, transformPoint, findParallelPolygons, calculateLength, calculateTotalBounds, groupEntitiesByProximity, findTitleForBounds, getEntityBounds } from './utils/geometryUtils';
+import { getBeamProperties, getCenter, transformPoint, findParallelPolygons, calculateLength, calculateTotalBounds, groupEntitiesByProximity, findTitleForBounds, getEntityBounds, parseViewportTitle, getGridIntersections, calculateMergeVector } from './utils/geometryUtils';
 import { Viewer } from './components/Viewer';
 import { Button } from './components/Button';
 import { renderDxfToCanvas } from './utils/renderUtils';
-import { Upload, Layers, Download, Image as ImageIcon, FileText, Settings, X, RefreshCw, Globe, Search, Calculator, Square, Box, Plus, File as FileIcon, Grid, ChevronUp, ChevronDown } from 'lucide-react';
+import { Upload, Layers, Download, Image as ImageIcon, FileText, Settings, X, RefreshCw, Globe, Search, Calculator, Square, Box, Plus, File as FileIcon, Grid, ChevronUp, ChevronDown, GitMerge } from 'lucide-react';
 
 // Standard CAD Colors (Index 1-7 + Grays + Common)
 const CAD_COLORS = [
@@ -627,6 +627,112 @@ const App: React.FC = () => {
       alert(`Found ${clusters.length} regions.`);
   };
 
+  const handleMergeViews = () => {
+      if (!activeProject) return;
+      
+      const resultLayer = 'MERGE_RESULT';
+      const axisLayers = activeProject.data.layers.filter(l => l.toUpperCase().includes('AXIS'));
+      const axisLines = extractEntities(axisLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
+          .filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
+      
+      const allText = extractEntities(activeProject.data.layers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
+          .filter(e => e.type === EntityType.TEXT);
+      const allLines = extractEntities(activeProject.data.layers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
+          .filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
+
+      const clusters = groupEntitiesByProximity(axisLines, 5000);
+      
+      interface ViewRegion {
+          bounds: Bounds;
+          title: string;
+          info: { prefix: string, index: number } | null;
+      }
+
+      const regions: ViewRegion[] = [];
+
+      clusters.forEach(box => {
+           const { title } = findTitleForBounds(box, allText, allLines);
+           if (title) {
+               regions.push({
+                   bounds: box,
+                   title,
+                   info: parseViewportTitle(title)
+               });
+           }
+      });
+
+      // Group by prefix
+      const groups: Record<string, ViewRegion[]> = {};
+      regions.forEach(r => {
+          if (r.info) {
+              const key = r.info.prefix;
+              if (!groups[key]) groups[key] = [];
+              groups[key].push(r);
+          }
+      });
+
+      const mergedEntities: DxfEntity[] = [];
+      const allEntities = extractEntities(activeProject.data.layers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
+
+      let mergedCount = 0;
+
+      Object.entries(groups).forEach(([prefix, views]) => {
+          if (views.length < 2) return;
+          
+          views.sort((a, b) => a.info!.index - b.info!.index);
+          const baseView = views[0]; // Index 1
+          
+          const baseIntersections = getGridIntersections(baseView.bounds, axisLines);
+
+          for (let i = 1; i < views.length; i++) {
+              const targetView = views[i];
+              const targetIntersections = getGridIntersections(targetView.bounds, axisLines);
+              
+              const vec = calculateMergeVector(baseIntersections, targetIntersections);
+              
+              if (vec) {
+                  // Find entities inside target bounds
+                  allEntities.forEach(ent => {
+                      const b = getEntityBounds(ent);
+                      if (!b) return;
+                      // Check center is in target bounds
+                      const cx = (b.minX + b.maxX)/2;
+                      const cy = (b.minY + b.maxY)/2;
+                      
+                      if (cx >= targetView.bounds.minX && cx <= targetView.bounds.maxX &&
+                          cy >= targetView.bounds.minY && cy <= targetView.bounds.maxY) {
+                          
+                          // Exclude Viewport Frames and Titles (heuristic)
+                          if (ent.layer === 'VIEWPORT_CALC' || ent.layer === 'VIEWPORT_DEBUG') return;
+                          
+                          // Clone and Translate
+                          const clone = { ...ent };
+                          clone.layer = resultLayer;
+                          
+                          if (clone.start) clone.start = { x: clone.start.x + vec.x, y: clone.start.y + vec.y };
+                          if (clone.end) clone.end = { x: clone.end.x + vec.x, y: clone.end.y + vec.y };
+                          if (clone.center) clone.center = { x: clone.center.x + vec.x, y: clone.center.y + vec.y };
+                          if (clone.vertices) clone.vertices = clone.vertices.map(v => ({ x: v.x + vec.x, y: v.y + vec.y }));
+                          if (clone.measureStart) clone.measureStart = { x: clone.measureStart.x + vec.x, y: clone.measureStart.y + vec.y };
+                          if (clone.measureEnd) clone.measureEnd = { x: clone.measureEnd.x + vec.x, y: clone.measureEnd.y + vec.y };
+
+                          mergedEntities.push(clone);
+                      }
+                  });
+                  mergedCount++;
+              }
+          }
+      });
+
+      if (mergedCount === 0) {
+          alert("No mergeable views found or alignment failed.");
+          return;
+      }
+      
+      updateActiveProjectData(resultLayer, mergedEntities, '#FFFFFF', [], false);
+      alert(`Merged ${mergedCount} views into '${resultLayer}'.`);
+  };
+
   const updateActiveProjectData = (resultLayer: string, newEntities: DxfEntity[], color: string, contextLayers: string[], fillLayer: boolean) => {
       if (!activeProject) return;
       
@@ -974,15 +1080,26 @@ const App: React.FC = () => {
                 
                 {/* Search / Split Group */}
                 <div className="col-span-2 space-y-2">
-                    <Button 
-                      onClick={calculateSplitRegions} 
-                      disabled={!activeProject || isLoading} 
-                      variant="primary" 
-                      className="w-full justify-center text-xs bg-purple-600 hover:bg-purple-700"
-                      title="Split View / Identify Blocks"
-                    >
-                      <Grid size={14} className="mr-1"/> Split View
-                    </Button>
+                    <div className="grid grid-cols-2 gap-2">
+                        <Button 
+                          onClick={calculateSplitRegions} 
+                          disabled={!activeProject || isLoading} 
+                          variant="primary" 
+                          className="w-full justify-center text-xs bg-purple-600 hover:bg-purple-700"
+                          title="Split View / Identify Blocks"
+                        >
+                          <Grid size={14} className="mr-1"/> Split View
+                        </Button>
+                        <Button 
+                          onClick={handleMergeViews} 
+                          disabled={!activeProject || isLoading} 
+                          variant="primary" 
+                          className="w-full justify-center text-xs bg-indigo-600 hover:bg-indigo-700"
+                          title="Merge Split Views"
+                        >
+                          <GitMerge size={14} className="mr-1"/> Merge Views
+                        </Button>
+                    </div>
                 </div>
 
                 <div className="col-span-2">

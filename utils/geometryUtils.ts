@@ -863,3 +863,117 @@ export const findTitleForBounds = (
 
     return { title: null, scannedBounds };
 };
+
+// --- MERGE VIEW HELPERS ---
+
+const CHINESE_NUMS: Record<string, number> = {
+    '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, 
+    '六': 6, '七': 7, '八': 8, '九': 9, '十': 10
+};
+
+export const parseViewportTitle = (title: string): { prefix: string, index: number } | null => {
+    // 1. Check (1), (2)...
+    const matchNum = title.match(/^(.*)\((\d+)\)$/);
+    if (matchNum) {
+        return { prefix: matchNum[1].trim(), index: parseInt(matchNum[2], 10) };
+    }
+
+    // 2. Check (一), (二)...
+    const matchCN = title.match(/^(.*)\(([一二三四五六七八九十]+)\)$/);
+    if (matchCN) {
+        const numStr = matchCN[2];
+        let val = CHINESE_NUMS[numStr];
+        // Simple handling for '十一' etc if needed, but basic 1-10 covers most
+        if (!val) val = 0; 
+        return { prefix: matchCN[1].trim(), index: val };
+    }
+
+    // 3. Check -1, -2...
+    const matchDash = title.match(/^(.*)-(\d+)$/);
+    if (matchDash) {
+         return { prefix: matchDash[1].trim(), index: parseInt(matchDash[2], 10) };
+    }
+
+    return null;
+};
+
+export const getGridIntersections = (box: Bounds, axisLines: DxfEntity[]): Point[] => {
+    // Filter horizontal and vertical axis lines inside box
+    const hLines: DxfEntity[] = [];
+    const vLines: DxfEntity[] = [];
+
+    axisLines.forEach(l => {
+        if (l.type !== EntityType.LINE || !l.start || !l.end) return;
+        
+        // Basic containment check (partial overlap)
+        if (Math.max(l.start.x, l.end.x) < box.minX || Math.min(l.start.x, l.end.x) > box.maxX) return;
+        if (Math.max(l.start.y, l.end.y) < box.minY || Math.min(l.start.y, l.end.y) > box.maxY) return;
+
+        const dx = Math.abs(l.end.x - l.start.x);
+        const dy = Math.abs(l.end.y - l.start.y);
+
+        if (dx > dy && dy < 10) hLines.push(l); // Horizontal
+        else if (dy > dx && dx < 10) vLines.push(l); // Vertical
+    });
+
+    const intersections: Point[] = [];
+
+    for (const h of hLines) {
+        for (const v of vLines) {
+             // Simple intersection of infinite lines
+             // H: y = hy
+             // V: x = vx
+             // Intersection: (vx, hy)
+             const hy = (h.start!.y + h.end!.y) / 2;
+             const vx = (v.start!.x + v.end!.x) / 2;
+
+             // Check if intersection is roughly within segments
+             const hMinX = Math.min(h.start!.x, h.end!.x);
+             const hMaxX = Math.max(h.start!.x, h.end!.x);
+             const vMinY = Math.min(v.start!.y, v.end!.y);
+             const vMaxY = Math.max(v.start!.y, v.end!.y);
+
+             if (vx >= hMinX - 100 && vx <= hMaxX + 100 &&
+                 hy >= vMinY - 100 && hy <= vMaxY + 100) {
+                 intersections.push({ x: vx, y: hy });
+             }
+        }
+    }
+    return intersections;
+};
+
+export const calculateMergeVector = (basePoints: Point[], targetPoints: Point[]): Point | null => {
+    if (basePoints.length === 0 || targetPoints.length === 0) return null;
+
+    const diffCounts = new Map<string, number>();
+    const diffValues = new Map<string, Point>();
+    let maxCount = 0;
+    let bestKey = '';
+
+    // Brute force matching: try aligning every target point to every base point
+    for (const t of targetPoints) {
+        for (const b of basePoints) {
+            const dx = Math.round(b.x - t.x);
+            const dy = Math.round(b.y - t.y);
+            // Quantize to avoid float errors (tolerance 50)
+            const key = `${Math.round(dx/50)}_${Math.round(dy/50)}`; 
+            
+            const current = (diffCounts.get(key) || 0) + 1;
+            diffCounts.set(key, current);
+            if (!diffValues.has(key)) {
+                diffValues.set(key, { x: b.x - t.x, y: b.y - t.y }); // Store exact diff of first match
+            }
+
+            if (current > maxCount) {
+                maxCount = current;
+                bestKey = key;
+            }
+        }
+    }
+
+    if (maxCount >= 1) { // At least one intersection match (usually need 2, but 1 is strictly minimum for translation)
+         return diffValues.get(bestKey) || null;
+    }
+
+    return null;
+};
