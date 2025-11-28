@@ -224,8 +224,11 @@ const App: React.FC = () => {
   // Recursively extract entities from layers, transforming block coordinates to world space
   const extractEntities = (targetLayers: string[], rootEntities: DxfEntity[], blocks: Record<string, DxfEntity[]>, blockBasePoints: Record<string, Point>): DxfEntity[] => {
       const extracted: DxfEntity[] = [];
-      const recurse = (entities: DxfEntity[], transform: { scale: Point, rotation: number, translation: Point }) => {
+      const recurse = (entities: DxfEntity[], transform: { scale: Point, rotation: number, translation: Point }, parentLayer: string | null) => {
           entities.forEach(ent => {
+             // Layer Inheritance: If entity is on Layer 0, use parent layer (if inside a block)
+             const effectiveLayer = (ent.layer === '0' && parentLayer) ? parentLayer : ent.layer;
+
              // 1. Recursion into Blocks
              if (ent.type === EntityType.INSERT && ent.blockName && blocks[ent.blockName]) {
                  const basePoint = blockBasePoints[ent.blockName] || { x: 0, y: 0 };
@@ -267,14 +270,14 @@ const App: React.FC = () => {
                             scale: { x: baseScaleX, y: baseScaleY },
                             rotation: baseRotation,
                             translation: finalTrans
-                         });
+                         }, effectiveLayer);
                      }
                  }
                  return;
              }
              // 2. Collection of Target Entities
-             if (targetLayers.includes(ent.layer)) {
-                 const worldEnt = { ...ent };
+             if (targetLayers.includes(effectiveLayer)) {
+                 const worldEnt = { ...ent, layer: effectiveLayer };
                  if (worldEnt.start) worldEnt.start = transformPoint(worldEnt.start, transform.scale, transform.rotation, transform.translation);
                  if (worldEnt.end) worldEnt.end = transformPoint(worldEnt.end, transform.scale, transform.rotation, transform.translation);
                  if (worldEnt.center) worldEnt.center = transformPoint(worldEnt.center, transform.scale, transform.rotation, transform.translation);
@@ -283,11 +286,14 @@ const App: React.FC = () => {
                  }
                  if (worldEnt.startAngle !== undefined) worldEnt.startAngle += transform.rotation;
                  if (worldEnt.endAngle !== undefined) worldEnt.endAngle += transform.rotation;
+                 if (worldEnt.measureStart) worldEnt.measureStart = transformPoint(worldEnt.measureStart, transform.scale, transform.rotation, transform.translation);
+                 if (worldEnt.measureEnd) worldEnt.measureEnd = transformPoint(worldEnt.measureEnd, transform.scale, transform.rotation, transform.translation);
+
                  extracted.push(worldEnt);
              }
           });
       };
-      recurse(rootEntities, { scale: {x:1, y:1}, rotation: 0, translation: {x:0, y:0} });
+      recurse(rootEntities, { scale: {x:1, y:1}, rotation: 0, translation: {x:0, y:0} }, null);
       return extracted;
   };
 
@@ -588,6 +594,7 @@ const App: React.FC = () => {
       }
 
       // 2. Extract potential title Text and Lines
+      // Need ALL lines including polylines for title underline check
       const allText = extractEntities(activeProject.data.layers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
           .filter(e => e.type === EntityType.TEXT);
       
@@ -701,14 +708,12 @@ const App: React.FC = () => {
       const axisLines = extractEntities(axisLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
           .filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
 
-      // Group by prefix
+      // Group by prefix (or title if no prefix)
       const groups: Record<string, ViewportRegion[]> = {};
       regions.forEach(r => {
-          if (r.info) {
-              const key = r.info.prefix;
-              if (!groups[key]) groups[key] = [];
-              groups[key].push(r);
-          }
+          const key = r.info ? r.info.prefix : r.title;
+          if (!groups[key]) groups[key] = [];
+          groups[key].push(r);
       });
 
       const mergedEntities: DxfEntity[] = [];
@@ -722,21 +727,42 @@ const App: React.FC = () => {
           return u.includes('标注') || u.includes('DIM') || u.includes('LABEL') || /^Z[\u4e00-\u9fa5]/.test(name);
       };
 
+      // Helper to check if a point is inside a bounds
+      const isPointInBounds = (p: Point, b: Bounds) => {
+          return p.x >= b.minX && p.x <= b.maxX && p.y >= b.minY && p.y <= b.maxY;
+      };
+
+      // Helper to determine if an entity belongs to a view region based on Start/Measure points
+      const shouldIncludeEntity = (ent: DxfEntity, bounds: Bounds): boolean => {
+           // Priority 1: Check Insertion/Start Point (Text, Blocks, Lines, Dims)
+           if (ent.start && isPointInBounds(ent.start, bounds)) return true;
+
+           // Priority 2: Check Dimension specific measurement points
+           if (ent.type === EntityType.DIMENSION) {
+               if (ent.measureStart && isPointInBounds(ent.measureStart, bounds)) return true;
+               if (ent.measureEnd && isPointInBounds(ent.measureEnd, bounds)) return true;
+               if (ent.end && isPointInBounds(ent.end, bounds)) return true; // Dim Text location
+           }
+
+           // Priority 3: Fallback to geometric center (Original behavior)
+           const b = getEntityBounds(ent);
+           if (b) {
+               const cx = (b.minX + b.maxX)/2;
+               const cy = (b.minY + b.maxY)/2;
+               if (cx >= bounds.minX && cx <= bounds.maxX &&
+                   cy >= bounds.minY && cy <= bounds.maxY) return true;
+           }
+           return false;
+      };
+
       Object.entries(groups).forEach(([prefix, views]) => {
-          // Sort by Index
-          views.sort((a, b) => a.info!.index - b.info!.index);
+          // Sort by Index (default to 1 if info is null)
+          views.sort((a, b) => (a.info?.index ?? 1) - (b.info?.index ?? 1));
           const baseView = views[0]; // Base view (Index 1 usually)
           
           // 1. Process Base View: Copy Labels to Unified Layer
           allEntities.forEach(ent => {
-             const b = getEntityBounds(ent);
-             if (!b) return;
-             const cx = (b.minX + b.maxX)/2;
-             const cy = (b.minY + b.maxY)/2;
-             
-             if (cx >= baseView.bounds.minX && cx <= baseView.bounds.maxX &&
-                 cy >= baseView.bounds.minY && cy <= baseView.bounds.maxY) {
-                 
+             if (shouldIncludeEntity(ent, baseView.bounds)) {
                  if (isLabelLayer(ent.layer)) {
                      const clone = { ...ent, layer: resultLayer };
                      mergedEntities.push(clone);
@@ -757,15 +783,7 @@ const App: React.FC = () => {
                   if (vec) {
                       // Find entities inside target bounds
                       allEntities.forEach(ent => {
-                          const b = getEntityBounds(ent);
-                          if (!b) return;
-                          // Check center is in target bounds
-                          const cx = (b.minX + b.maxX)/2;
-                          const cy = (b.minY + b.maxY)/2;
-                          
-                          if (cx >= targetView.bounds.minX && cx <= targetView.bounds.maxX &&
-                              cy >= targetView.bounds.minY && cy <= targetView.bounds.maxY) {
-                              
+                          if (shouldIncludeEntity(ent, targetView.bounds)) {
                               if (isLabelLayer(ent.layer)) {
                                   // Clone and Translate
                                   const clone = { ...ent };
