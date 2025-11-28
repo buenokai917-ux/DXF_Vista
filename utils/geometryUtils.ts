@@ -977,3 +977,97 @@ export const calculateMergeVector = (basePoints: Point[], targetPoints: Point[])
 
     return null;
 };
+
+// --- HIT TESTING ---
+
+export const findLayersAtPoint = (
+    point: Point,
+    entities: DxfEntity[],
+    blocks: Record<string, DxfEntity[]>,
+    activeLayers: Set<string>,
+    tolerance: number
+): string[] => {
+    const found = new Set<string>();
+
+    const checkEntity = (ent: DxfEntity, offsetX: number, offsetY: number, scaleX: number, scaleY: number, rotation: number) => {
+        // If layer is hidden (and not Layer 0 which might inherit), skip unless it's a block which we must traverse
+        const isHidden = ent.layer !== '0' && !activeLayers.has(ent.layer);
+        // We still traverse hidden blocks to check for visible sub-entities if necessary, 
+        // but for hit testing, usually if the block instance layer is off, the whole thing is off.
+        // However, if we follow the render logic:
+        // "Traverse Blocks even if layer is hidden (to find nested items)"
+        const canTraverse = ent.type === EntityType.INSERT; 
+        
+        if (isHidden && !canTraverse) return;
+
+        const toWorld = (p: Point) => {
+           const sx = p.x * scaleX;
+           const sy = p.y * scaleY;
+           if (rotation === 0) return { x: sx + offsetX, y: sy + offsetY };
+           const rad = rotation * Math.PI / 180;
+           const rx = sx * Math.cos(rad) - sy * Math.sin(rad);
+           const ry = sx * Math.sin(rad) + sy * Math.cos(rad);
+           return { x: rx + offsetX, y: ry + offsetY };
+        };
+
+        // Recurse into blocks
+        if (ent.type === EntityType.INSERT && ent.blockName && blocks[ent.blockName]) {
+             const subEntities = blocks[ent.blockName];
+             // Block Base Point logic isn't passed here easily (requires DxfData context passed down)
+             // Simplified: Assume 0,0 or let it be slightly off. 
+             // Ideally we should pass 'blockBasePoints' to this function too.
+             // For now, standard INSERT logic:
+             let insLocalX = ent.start!.x * scaleX;
+             let insLocalY = ent.start!.y * scaleY;
+             if (rotation !== 0) {
+                 const r = rotation * Math.PI / 180;
+                 const tx = insLocalX * Math.cos(r) - insLocalY * Math.sin(r);
+                 const ty = insLocalX * Math.sin(r) + insLocalY * Math.cos(r);
+                 insLocalX = tx;
+                 insLocalY = ty;
+             }
+             const nextOffsetX = offsetX + insLocalX;
+             const nextOffsetY = offsetY + insLocalY;
+             const nextScaleX = scaleX * (ent.scale?.x || 1);
+             const nextScaleY = scaleY * (ent.scale?.y || 1);
+             const nextRotation = rotation + (ent.rotation || 0);
+
+             subEntities.forEach(sub => {
+                 checkEntity(sub, nextOffsetX, nextOffsetY, nextScaleX, nextScaleY, nextRotation);
+             });
+             return;
+        }
+
+        // Primitives
+        if (isHidden) return; // Don't hit test hidden primitives
+
+        if (ent.type === EntityType.LINE && ent.start && ent.end) {
+            const ws = toWorld(ent.start);
+            const we = toWorld(ent.end);
+            if (distancePointToLine(point, ws, we) <= tolerance) found.add(ent.layer);
+        }
+        else if (ent.type === EntityType.CIRCLE && ent.center && ent.radius) {
+            const wc = toWorld(ent.center);
+            const wr = ent.radius * Math.max(Math.abs(scaleX), Math.abs(scaleY));
+            const d = distance(point, wc);
+            if (Math.abs(d - wr) <= tolerance) found.add(ent.layer);
+        }
+        else if (ent.type === EntityType.LWPOLYLINE && ent.vertices) {
+            for(let i=0; i<ent.vertices.length; i++) {
+                const p1 = toWorld(ent.vertices[i]);
+                const nextIdx = (i + 1) % ent.vertices.length;
+                if (!ent.closed && nextIdx === 0) break;
+                
+                const p2 = toWorld(ent.vertices[nextIdx]);
+                if (distancePointToLine(point, p1, p2) <= tolerance) {
+                    found.add(ent.layer);
+                    break;
+                }
+            }
+        }
+        // Text/Solid/Dimension could be added here
+    };
+
+    entities.forEach(e => checkEntity(e, 0, 0, 1, 1, 0));
+    return Array.from(found);
+};

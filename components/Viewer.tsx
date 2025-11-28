@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { DxfData, LayerColors, Bounds, SearchResult } from '../types';
 import { ZoomIn, ZoomOut, Maximize, MousePointer2 } from 'lucide-react';
-import { calculateTotalBounds } from '../utils/geometryUtils';
+import { calculateTotalBounds, findLayersAtPoint } from '../utils/geometryUtils';
 import { renderDxfToCanvas } from '../utils/renderUtils';
 
 interface ViewerProps {
@@ -13,6 +13,7 @@ interface ViewerProps {
   highlights?: SearchResult[]; // For search result highlighting
   activeHighlightIndex?: number;
   onRef?: (ref: HTMLCanvasElement | null) => void;
+  projectName?: string;
 }
 
 export const Viewer: React.FC<ViewerProps> = ({ 
@@ -23,7 +24,8 @@ export const Viewer: React.FC<ViewerProps> = ({
   targetBounds, 
   highlights, 
   activeHighlightIndex, 
-  onRef 
+  onRef,
+  projectName
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -31,6 +33,11 @@ export const Viewer: React.FC<ViewerProps> = ({
   const [transform, setTransform] = useState({ k: 1, x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [lastMouse, setLastMouse] = useState({ x: 0, y: 0 });
+  
+  // Inspection State
+  const [mouseWorldPos, setMouseWorldPos] = useState<{x: number, y: number} | null>(null);
+  const [hoveredLayers, setHoveredLayers] = useState<string[]>([]);
+  const lastHitTestTime = useRef(0);
 
   useEffect(() => {
     if (onRef) onRef(canvasRef.current);
@@ -127,11 +134,45 @@ export const Viewer: React.FC<ViewerProps> = ({
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
-    if (!isDragging) return;
-    const dx = e.clientX - lastMouse.x;
-    const dy = e.clientY - lastMouse.y;
-    setLastMouse({ x: e.clientX, y: e.clientY });
-    setTransform(prev => ({ ...prev, x: prev.x + dx, y: prev.y - dy }));
+    // 1. Calculate World Coordinates
+    if (!containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+    
+    // Transform logic: canvasY = height - (worldY * k + ty) -> worldY = (height - canvasY - ty) / k
+    // However, our render logic is: ctx.translate(tx, height - ty); ctx.scale(k, -k);
+    // Which means: screenX = worldX * k + tx
+    //              screenY = height - (worldY * k + ty)
+    // So: worldX = (screenX - tx) / k
+    //     worldY = (height - screenY - ty) / k
+    
+    const worldX = (mouseX - transform.x) / transform.k;
+    const worldY = (rect.height - mouseY - transform.y) / transform.k;
+    
+    setMouseWorldPos({ x: worldX, y: worldY });
+
+    // 2. Dragging Logic
+    if (isDragging) {
+        const dx = e.clientX - lastMouse.x;
+        const dy = e.clientY - lastMouse.y;
+        setLastMouse({ x: e.clientX, y: e.clientY });
+        setTransform(prev => ({ ...prev, x: prev.x + dx, y: prev.y - dy })); // Inverting Y delta for pan usually feels wrong if coords are flipped? 
+        // Actually for standard pan: visual move up = content move up. 
+        // If Y is up, screen Y down is world Y down.
+        // Let's stick to existing logic: setTransform(prev => ({ ...prev, x: prev.x + dx, y: prev.y - dy }));
+    }
+
+    // 3. Throttled Hit Test
+    if (data) {
+        const now = Date.now();
+        if (now - lastHitTestTime.current > 50) { // Check every 50ms
+            const tolerance = 10 / transform.k; // 10 screen pixels tolerance
+            const layers = findLayersAtPoint({x: worldX, y: worldY}, data.entities, data.blocks, activeLayers, tolerance);
+            setHoveredLayers(layers);
+            lastHitTestTime.current = now;
+        }
+    }
   };
 
   const handleMouseUp = () => setIsDragging(false);
@@ -212,6 +253,48 @@ export const Viewer: React.FC<ViewerProps> = ({
     >
       <canvas ref={canvasRef} className="block w-full h-full" />
       
+      {/* Top Right Overlay Container: Inspection & File Info */}
+      <div className="absolute top-4 right-4 pointer-events-none flex items-start gap-3">
+          
+          {/* Mouse Inspection (Left side of overlay) */}
+          {mouseWorldPos && (
+              <div className="flex flex-col items-end gap-2">
+                  <div className="bg-slate-800/80 backdrop-blur px-3 py-1.5 rounded border border-slate-700 text-[10px] font-mono text-slate-300 shadow-lg whitespace-nowrap">
+                      X: {mouseWorldPos.x.toFixed(0)}, Y: {mouseWorldPos.y.toFixed(0)}
+                  </div>
+                  {hoveredLayers.length > 0 && (
+                      <div className="bg-slate-800/80 backdrop-blur px-3 py-2 rounded border border-slate-700 shadow-lg text-right">
+                          <div className="text-[10px] text-slate-500 uppercase font-bold mb-1">Layers Detected</div>
+                          {hoveredLayers.slice(0, 5).map(l => (
+                              <div key={l} className="text-xs text-blue-300 font-mono">
+                                  {l}
+                              </div>
+                          ))}
+                          {hoveredLayers.length > 5 && (
+                              <div className="text-[10px] text-slate-500 italic">
+                                  +{hoveredLayers.length - 5} more
+                              </div>
+                          )}
+                      </div>
+                  )}
+              </div>
+          )}
+
+          {/* File Info (Right side of overlay, persistent) */}
+          <div className="bg-slate-900/90 border border-slate-700 rounded-lg p-3 text-xs text-slate-400 backdrop-blur-sm shadow-xl">
+               <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                 <span className="font-semibold text-slate-500">File:</span>
+                 <span className="text-right text-slate-300 max-w-[150px] truncate">{projectName || 'Unknown'}</span>
+                 <span className="font-semibold">Entities:</span>
+                 <span className="text-right text-slate-200">{data?.entities.length || 0}</span>
+                 <span className="font-semibold">Layers:</span>
+                 <span className="text-right text-slate-200">{data?.layers.length || 0}</span>
+               </div>
+          </div>
+
+      </div>
+
+      {/* Bottom Center Controls */}
       <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-slate-800/90 backdrop-blur border border-slate-700 p-1.5 rounded-full shadow-xl">
         <button onClick={() => handleZoomBtn(0.8)} className="p-2 hover:bg-slate-700 rounded-full text-slate-300 hover:text-white transition-colors" title="Zoom Out">
             <ZoomOut size={18} />

@@ -695,21 +695,8 @@ const App: React.FC = () => {
                highlights={searchResults}
                activeHighlightIndex={currentResultIdx}
                onRef={(ref) => canvasRef.current = ref} 
+               projectName={activeProject?.name}
              />
-             
-             {/* Overlay Info */}
-             {activeProject && !isLoading && (
-                <div className="absolute top-4 right-4 bg-slate-900/90 border border-slate-700 rounded-lg p-3 text-xs text-slate-400 backdrop-blur-sm shadow-xl pointer-events-none">
-                   <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-                     <span className="font-semibold text-slate-500">File:</span>
-                     <span className="text-right text-slate-300 max-w-[150px] truncate">{activeProject.name}</span>
-                     <span className="font-semibold">Entities:</span>
-                     <span className="text-right text-slate-200">{activeProject.data.entities.length}</span>
-                     <span className="font-semibold">Layers:</span>
-                     <span className="text-right text-slate-200">{activeProject.data.layers.length}</span>
-                   </div>
-                </div>
-             )}
         </div>
       </div>
     </div>
