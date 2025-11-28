@@ -98,6 +98,16 @@ export const renderDxfToCanvas = ({
                  continue;
             }
 
+            // Handle Dimension Blocks (e.g. *D56) which contain arrows (filled solids)
+            if (ent.type === EntityType.DIMENSION && ent.blockName && data.blocks[ent.blockName]) {
+                // Dimensions in DXF usually have absolute coordinates in their anonymous blocks.
+                // We render them without entity-level transforms, just passing the layer context.
+                if (isLayerActive) {
+                    drawFillsRecursive(currCtx, data.blocks[ent.blockName], effectiveLayer);
+                }
+                continue;
+            }
+
             if (!isLayerActive) continue;
 
             // Only draw filled polygons if the layer is marked as FILLED
@@ -159,6 +169,15 @@ export const renderDxfToCanvas = ({
                  continue;
             }
 
+            // Handle Dimension Blocks (e.g. *D56) containing lines, text, ticks
+            if (ent.type === EntityType.DIMENSION && ent.blockName && data.blocks[ent.blockName]) {
+                if (isLayerActive) {
+                    // Render the anonymous block content directly (usually WCS)
+                    drawStrokesRecursive(currCtx, data.blocks[ent.blockName], effectiveLayer, scaleAcc);
+                }
+                continue; // Skip manual fallback drawing
+            }
+
             if (!isLayerActive) continue;
 
             currCtx.strokeStyle = getColor(effectiveLayer);
@@ -203,6 +222,7 @@ export const renderDxfToCanvas = ({
                 lines.forEach((line, i) => currCtx.fillText(line, 0, i * h * 1.25));
                 currCtx.restore();
             }
+            // Fallback for Dimensions without blocks (or failed block load)
             else if (ent.type === EntityType.DIMENSION) {
                 if (ent.measureStart && ent.measureEnd) {
                     currCtx.moveTo(ent.measureStart.x, ent.measureStart.y);

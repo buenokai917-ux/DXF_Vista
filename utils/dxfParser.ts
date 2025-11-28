@@ -371,7 +371,12 @@ const parseProperty = (code: number, value: string, entity: Partial<DxfEntity>, 
         if (entity.type === EntityType.ATTRIB && (valInt & 1) === 1) entity.invisible = true;
         break;
     case 1: entity.text = decodeDxfString(value, encoding); break;
-    case 2: if (entity.type === EntityType.INSERT) entity.blockName = value; break;
+    case 2: 
+        // Allow Block Name for INSERT and DIMENSION (Group 2 refers to block name for both)
+        if (entity.type === EntityType.INSERT || entity.type === EntityType.DIMENSION) {
+            entity.blockName = value; 
+        }
+        break;
   }
 };
 
