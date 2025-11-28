@@ -872,14 +872,14 @@ const CHINESE_NUMS: Record<string, number> = {
 };
 
 export const parseViewportTitle = (title: string): { prefix: string, index: number } | null => {
-    // 1. Check (1), (2)...
-    const matchNum = title.match(/^(.*)\((\d+)\)$/);
+    // 1. Check (1), (2)... including Chinese parentheses
+    const matchNum = title.match(/^(.*)[(（](\d+)[)）]$/);
     if (matchNum) {
         return { prefix: matchNum[1].trim(), index: parseInt(matchNum[2], 10) };
     }
 
-    // 2. Check (一), (二)...
-    const matchCN = title.match(/^(.*)\(([一二三四五六七八九十]+)\)$/);
+    // 2. Check (一), (二)... including Chinese parentheses
+    const matchCN = title.match(/^(.*)[(（]([一二三四五六七八九十]+)[)）]$/);
     if (matchCN) {
         const numStr = matchCN[2];
         let val = CHINESE_NUMS[numStr];

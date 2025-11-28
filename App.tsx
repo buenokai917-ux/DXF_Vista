@@ -6,7 +6,7 @@ import { getBeamProperties, getCenter, transformPoint, findParallelPolygons, cal
 import { Viewer } from './components/Viewer';
 import { Button } from './components/Button';
 import { renderDxfToCanvas } from './utils/renderUtils';
-import { Upload, Layers, Download, Image as ImageIcon, FileText, Settings, X, RefreshCw, Globe, Search, Calculator, Square, Box, Plus, File as FileIcon, Grid, ChevronUp, ChevronDown, GitMerge } from 'lucide-react';
+import { Upload, Layers, Download, Image as ImageIcon, FileText, Settings, X, RefreshCw, Search, Calculator, Square, Box, Plus, File as FileIcon, Grid, ChevronUp, ChevronDown, GitMerge } from 'lucide-react';
 
 // Standard CAD Colors (Index 1-7 + Grays + Common)
 const CAD_COLORS = [
@@ -36,7 +36,6 @@ interface ProjectFile {
 const App: React.FC = () => {
   const [projects, setProjects] = useState<ProjectFile[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
-  const [encoding, setEncoding] = useState<string>('gbk');
   const [layerColors, setLayerColors] = useState<LayerColors>({});
   const [layerSearchTerm, setLayerSearchTerm] = useState('');
   const [isSidebarOpen, setSidebarOpen] = useState(true);
@@ -54,14 +53,6 @@ const App: React.FC = () => {
     projects.find(p => p.id === activeProjectId) || null
   , [projects, activeProjectId]);
 
-  const ENCODINGS = [
-    { label: 'UTF-8 (Default)', value: 'utf-8' },
-    { label: 'GBK (Chinese)', value: 'gbk' },
-    { label: 'Big5 (Trad. Chinese)', value: 'big5' },
-    { label: 'Shift_JIS (Japanese)', value: 'shift_jis' },
-    { label: 'Windows-1252 (Latin)', value: 'windows-1252' },
-  ];
-
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const uploadedFiles = event.target.files;
     if (!uploadedFiles || uploadedFiles.length === 0) return;
@@ -70,6 +61,35 @@ const App: React.FC = () => {
     
     // Process files
     const fileList = Array.from(uploadedFiles) as File[];
+
+    // Try multiple encodings and pick the one with the fewest replacement chars ()
+    const decodeBufferBestEffort = (buffer: ArrayBuffer) => {
+      const preferred = ['utf-8', 'gb18030', 'gbk', 'big5', 'shift_jis', 'windows-1252'];
+      const seen = new Set<string>();
+      let best = { text: '', enc: 'utf-8', score: Number.POSITIVE_INFINITY };
+
+      preferred.forEach(enc => {
+        if (!enc || seen.has(enc)) return;
+        seen.add(enc);
+        try {
+          const dec = new TextDecoder(enc as any, { fatal: false });
+          const text = dec.decode(new Uint8Array(buffer));
+          const score = (text.match(/\uFFFD/g) || []).length;
+          if (score < best.score) {
+            best = { text, enc, score };
+          }
+        } catch (e) {
+          // Ignore unsupported encodings
+        }
+      });
+
+      if (best.text === '') {
+        best.text = new TextDecoder().decode(new Uint8Array(buffer));
+        best.enc = 'utf-8';
+      }
+
+      return best;
+    };
     
     const processFiles = async () => {
       const newProjects: ProjectFile[] = [];
@@ -87,13 +107,22 @@ const App: React.FC = () => {
       try {
         await Promise.all(fileList.map(async (file) => {
            const reader = new FileReader();
-           const content = await new Promise<string>((resolve, reject) => {
-              reader.onload = (e) => resolve(e.target?.result as string);
+           const { text: content, enc: usedEnc } = await new Promise<{ text: string, enc: string }>((resolve, reject) => {
+              reader.onload = (e) => {
+                const result = e.target?.result;
+                if (result instanceof ArrayBuffer) {
+                  resolve(decodeBufferBestEffort(result));
+                } else if (typeof result === 'string') {
+                  resolve({ text: result, enc: 'utf-8' });
+                } else {
+                  resolve({ text: '', enc: 'utf-8' });
+                }
+              };
               reader.onerror = reject;
-              reader.readAsText(file, encoding);
+              reader.readAsArrayBuffer(file);
            });
 
-           const parsed = parseDxf(content, encoding);
+           const parsed = parseDxf(content, usedEnc);
            
            // Determine colors for new layers
            parsed.layers.forEach((layer) => {
@@ -667,7 +696,7 @@ const App: React.FC = () => {
           return;
       }
       
-      const resultLayer = 'MERGE_RESULT';
+      const resultLayer = 'MERGE_LABEL';
       const axisLayers = activeProject.data.layers.filter(l => l.toUpperCase().includes('AXIS'));
       const axisLines = extractEntities(axisLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
           .filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
@@ -687,61 +716,87 @@ const App: React.FC = () => {
 
       let mergedCount = 0;
 
+      // Identify Annotation Layers
+      const isLabelLayer = (name: string): boolean => {
+          const u = name.toUpperCase();
+          return u.includes('标注') || u.includes('DIM') || u.includes('LABEL') || /^Z[\u4e00-\u9fa5]/.test(name);
+      };
+
       Object.entries(groups).forEach(([prefix, views]) => {
-          if (views.length < 2) return;
-          
+          // Sort by Index
           views.sort((a, b) => a.info!.index - b.info!.index);
-          const baseView = views[0]; // Index 1
+          const baseView = views[0]; // Base view (Index 1 usually)
           
-          const baseIntersections = getGridIntersections(baseView.bounds, axisLines);
+          // 1. Process Base View: Copy Labels to Unified Layer
+          allEntities.forEach(ent => {
+             const b = getEntityBounds(ent);
+             if (!b) return;
+             const cx = (b.minX + b.maxX)/2;
+             const cy = (b.minY + b.maxY)/2;
+             
+             if (cx >= baseView.bounds.minX && cx <= baseView.bounds.maxX &&
+                 cy >= baseView.bounds.minY && cy <= baseView.bounds.maxY) {
+                 
+                 if (isLabelLayer(ent.layer)) {
+                     const clone = { ...ent, layer: resultLayer };
+                     mergedEntities.push(clone);
+                 }
+             }
+          });
+          
+          // 2. Process Target Views: Align & Merge Labels
+          if (views.length > 1) {
+              const baseIntersections = getGridIntersections(baseView.bounds, axisLines);
 
-          for (let i = 1; i < views.length; i++) {
-              const targetView = views[i];
-              const targetIntersections = getGridIntersections(targetView.bounds, axisLines);
-              
-              const vec = calculateMergeVector(baseIntersections, targetIntersections);
-              
-              if (vec) {
-                  // Find entities inside target bounds
-                  allEntities.forEach(ent => {
-                      const b = getEntityBounds(ent);
-                      if (!b) return;
-                      // Check center is in target bounds
-                      const cx = (b.minX + b.maxX)/2;
-                      const cy = (b.minY + b.maxY)/2;
-                      
-                      if (cx >= targetView.bounds.minX && cx <= targetView.bounds.maxX &&
-                          cy >= targetView.bounds.minY && cy <= targetView.bounds.maxY) {
+              for (let i = 1; i < views.length; i++) {
+                  const targetView = views[i];
+                  const targetIntersections = getGridIntersections(targetView.bounds, axisLines);
+                  
+                  const vec = calculateMergeVector(baseIntersections, targetIntersections);
+                  
+                  if (vec) {
+                      // Find entities inside target bounds
+                      allEntities.forEach(ent => {
+                          const b = getEntityBounds(ent);
+                          if (!b) return;
+                          // Check center is in target bounds
+                          const cx = (b.minX + b.maxX)/2;
+                          const cy = (b.minY + b.maxY)/2;
                           
-                          // Exclude Viewport Frames and Titles (heuristic)
-                          if (ent.layer === 'VIEWPORT_CALC' || ent.layer === 'VIEWPORT_DEBUG') return;
-                          
-                          // Clone and Translate
-                          const clone = { ...ent };
-                          clone.layer = resultLayer;
-                          
-                          if (clone.start) clone.start = { x: clone.start.x + vec.x, y: clone.start.y + vec.y };
-                          if (clone.end) clone.end = { x: clone.end.x + vec.x, y: clone.end.y + vec.y };
-                          if (clone.center) clone.center = { x: clone.center.x + vec.x, y: clone.center.y + vec.y };
-                          if (clone.vertices) clone.vertices = clone.vertices.map(v => ({ x: v.x + vec.x, y: v.y + vec.y }));
-                          if (clone.measureStart) clone.measureStart = { x: clone.measureStart.x + vec.x, y: clone.measureStart.y + vec.y };
-                          if (clone.measureEnd) clone.measureEnd = { x: clone.measureEnd.x + vec.x, y: clone.measureEnd.y + vec.y };
+                          if (cx >= targetView.bounds.minX && cx <= targetView.bounds.maxX &&
+                              cy >= targetView.bounds.minY && cy <= targetView.bounds.maxY) {
+                              
+                              if (isLabelLayer(ent.layer)) {
+                                  // Clone and Translate
+                                  const clone = { ...ent };
+                                  clone.layer = resultLayer;
+                                  
+                                  if (clone.start) clone.start = { x: clone.start.x + vec.x, y: clone.start.y + vec.y };
+                                  if (clone.end) clone.end = { x: clone.end.x + vec.x, y: clone.end.y + vec.y };
+                                  if (clone.center) clone.center = { x: clone.center.x + vec.x, y: clone.center.y + vec.y };
+                                  if (clone.vertices) clone.vertices = clone.vertices.map(v => ({ x: v.x + vec.x, y: v.y + vec.y }));
+                                  if (clone.measureStart) clone.measureStart = { x: clone.measureStart.x + vec.x, y: clone.measureStart.y + vec.y };
+                                  if (clone.measureEnd) clone.measureEnd = { x: clone.measureEnd.x + vec.x, y: clone.measureEnd.y + vec.y };
 
-                          mergedEntities.push(clone);
-                      }
-                  });
-                  mergedCount++;
+                                  mergedEntities.push(clone);
+                              }
+                          }
+                      });
+                      mergedCount++;
+                  }
               }
           }
+          // If views.length === 1, we still populated mergedEntities with base labels, effectively preparing it for calculation.
+          mergedCount++;
       });
 
-      if (mergedCount === 0) {
-          alert("No mergeable views found or alignment failed.");
+      if (mergedEntities.length === 0) {
+          alert("No label entities found to merge.");
           return;
       }
       
-      updateActiveProjectData(resultLayer, mergedEntities, '#FFFFFF', [], false);
-      alert(`Merged ${mergedCount} views into '${resultLayer}'.`);
+      updateActiveProjectData(resultLayer, mergedEntities, '#00FFFF', [], false); // Cyan for Merged Labels
+      alert(`Consolidated labels from ${mergedCount} view groups into '${resultLayer}'.`);
   };
 
   const updateActiveProjectData = (resultLayer: string, newEntities: DxfEntity[], color: string, contextLayers: string[], fillLayer: boolean) => {
@@ -936,26 +991,6 @@ const App: React.FC = () => {
                   <input type="file" accept=".dxf" multiple className="hidden" onChange={handleFileUpload} />
               </div>
            </label>
-
-           {/* Encoding Selector */}
-           <div className="flex flex-col gap-2">
-              <div className="flex justify-between items-center">
-                  <label className="text-xs text-slate-500 font-medium flex items-center gap-1">
-                    <Globe size={12} />
-                    Text Encoding
-                  </label>
-                  <span className="text-[10px] text-slate-600">Apply to next upload</span>
-              </div>
-              <select 
-                value={encoding} 
-                onChange={(e) => setEncoding(e.target.value)}
-                className="w-full bg-slate-800 text-xs text-slate-200 border border-slate-700 rounded px-2 py-2 focus:ring-1 focus:ring-blue-500 outline-none"
-              >
-                {ENCODINGS.map(enc => (
-                  <option key={enc.value} value={enc.value}>{enc.label}</option>
-                ))}
-              </select>
-           </div>
         </div>
 
         {/* Layer List Area */}
