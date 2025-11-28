@@ -74,4 +74,10 @@ export interface SearchResult {
   rotation: number;
 }
 
+export interface ViewportRegion {
+  bounds: Bounds;
+  title: string;
+  info: { prefix: string, index: number } | null;
+}
+
 export type LayerColors = { [key: string]: string };

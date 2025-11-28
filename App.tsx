@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { jsPDF } from 'jspdf';
 import { parseDxf } from './utils/dxfParser';
-import { DxfData, LayerColors, DxfEntity, EntityType, Point, Bounds, SearchResult } from './types';
+import { DxfData, LayerColors, DxfEntity, EntityType, Point, Bounds, SearchResult, ViewportRegion } from './types';
 import { getBeamProperties, getCenter, transformPoint, findParallelPolygons, calculateLength, calculateTotalBounds, groupEntitiesByProximity, findTitleForBounds, getEntityBounds, parseViewportTitle, getGridIntersections, calculateMergeVector } from './utils/geometryUtils';
 import { Viewer } from './components/Viewer';
 import { Button } from './components/Button';
@@ -30,6 +30,7 @@ interface ProjectFile {
   data: DxfData;
   activeLayers: Set<string>;
   filledLayers: Set<string>;
+  splitRegions: ViewportRegion[] | null;
 }
 
 const App: React.FC = () => {
@@ -128,7 +129,8 @@ const App: React.FC = () => {
              name: file.name,
              data: parsed,
              activeLayers: new Set(parsed.layers),
-             filledLayers: new Set()
+             filledLayers: new Set(),
+             splitRegions: null
            });
         }));
 
@@ -541,27 +543,25 @@ const App: React.FC = () => {
     alert(`Marked ${columnEntities.length} columns.`);
   };
 
-  const calculateSplitRegions = () => {
-      if (!activeProject) return;
+  const calculateSplitRegions = (suppressAlert = false): ViewportRegion[] | null => {
+      if (!activeProject) return null;
       const resultLayer = 'VIEWPORT_CALC';
       const debugLayer = 'VIEWPORT_DEBUG';
 
       // 1. Extract AXIS lines for clustering
-      // Extract from all layers containing 'AXIS' (case-insensitive)
       const axisLayers = activeProject.data.layers.filter(l => l.toUpperCase().includes('AXIS'));
       const axisLines = extractEntities(axisLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
           .filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
 
       if (axisLines.length === 0) {
-          alert("No AXIS lines found to determine regions.");
-          return;
+          if (!suppressAlert) alert("No AXIS lines found to determine regions.");
+          return null;
       }
 
-      // 2. Extract potential title Text and Lines (excluding AXIS text for title search, maintaining safe exclusion)
+      // 2. Extract potential title Text and Lines
       const allText = extractEntities(activeProject.data.layers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
           .filter(e => e.type === EntityType.TEXT);
       
-      // Include LWPOLYLINE in lines to detect polyline underlines
       const allLines = extractEntities(activeProject.data.layers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
           .filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
 
@@ -570,11 +570,19 @@ const App: React.FC = () => {
       
       const newEntities: DxfEntity[] = [];
       const debugEntities: DxfEntity[] = [];
+      const regions: ViewportRegion[] = [];
 
       clusters.forEach((box, i) => {
           // Find Title
           const { title, scannedBounds } = findTitleForBounds(box, allText, allLines);
           const label = title || `BLOCK ${i + 1}`;
+
+          // Save Region Data
+          regions.push({
+              bounds: box,
+              title: label,
+              info: parseViewportTitle(label)
+          });
 
           // Create Rectangle
           const rect: DxfEntity = {
@@ -616,53 +624,56 @@ const App: React.FC = () => {
       });
 
       if (newEntities.length === 0) {
-          alert("Could not determine split regions.");
-          return;
+          if (!suppressAlert) alert("Could not determine split regions.");
+          return null;
       }
 
-      // Add debug layer first
-      updateActiveProjectData(debugLayer, debugEntities, '#444444', [], false);
-      // Add result layer
-      updateActiveProjectData(resultLayer, newEntities, '#FF00FF', ['AXIS'], false);
-      alert(`Found ${clusters.length} regions.`);
+      // Persist regions and add visualization layers
+      const updatedData = {
+          ...activeProject.data,
+          entities: [...activeProject.data.entities, ...newEntities, ...debugEntities],
+          layers: [...new Set([...activeProject.data.layers, resultLayer, debugLayer])]
+      };
+
+      const newColors = { ...layerColors, [resultLayer]: '#FF00FF', [debugLayer]: '#444444' };
+      setLayerColors(newColors);
+
+      setProjects(prev => prev.map(p => {
+          if (p.id === activeProject.id) {
+               const newActive = new Set(p.activeLayers);
+               newActive.add(resultLayer);
+               // Do not activate debug layer by default
+               return { ...p, data: updatedData, splitRegions: regions, activeLayers: newActive };
+          }
+          return p;
+      }));
+
+      if (!suppressAlert) alert(`Found ${clusters.length} regions.`);
+      return regions;
   };
 
   const handleMergeViews = () => {
       if (!activeProject) return;
       
+      let regions = activeProject.splitRegions;
+      
+      // If regions not calculated yet, calculate them first
+      if (!regions || regions.length === 0) {
+          regions = calculateSplitRegions(true); // Suppress alert for implicit split
+      }
+
+      if (!regions || regions.length === 0) {
+          alert("Could not identify regions to merge.");
+          return;
+      }
+      
       const resultLayer = 'MERGE_RESULT';
       const axisLayers = activeProject.data.layers.filter(l => l.toUpperCase().includes('AXIS'));
       const axisLines = extractEntities(axisLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
           .filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
-      
-      const allText = extractEntities(activeProject.data.layers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
-          .filter(e => e.type === EntityType.TEXT);
-      const allLines = extractEntities(activeProject.data.layers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
-          .filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
-
-      const clusters = groupEntitiesByProximity(axisLines, 5000);
-      
-      interface ViewRegion {
-          bounds: Bounds;
-          title: string;
-          info: { prefix: string, index: number } | null;
-      }
-
-      const regions: ViewRegion[] = [];
-
-      clusters.forEach(box => {
-           const { title } = findTitleForBounds(box, allText, allLines);
-           if (title) {
-               regions.push({
-                   bounds: box,
-                   title,
-                   info: parseViewportTitle(title)
-               });
-           }
-      });
 
       // Group by prefix
-      const groups: Record<string, ViewRegion[]> = {};
+      const groups: Record<string, ViewportRegion[]> = {};
       regions.forEach(r => {
           if (r.info) {
               const key = r.info.prefix;
@@ -1082,7 +1093,7 @@ const App: React.FC = () => {
                 <div className="col-span-2 space-y-2">
                     <div className="grid grid-cols-2 gap-2">
                         <Button 
-                          onClick={calculateSplitRegions} 
+                          onClick={() => calculateSplitRegions()} 
                           disabled={!activeProject || isLoading} 
                           variant="primary" 
                           className="w-full justify-center text-xs bg-purple-600 hover:bg-purple-700"
