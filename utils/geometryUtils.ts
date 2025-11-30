@@ -362,7 +362,8 @@ const createPolygonFromPair = (
     const projL2Start = { x: l1.start.x + u.x * tB1, y: l1.start.y + u.y * tB1 };
     const vPerp = { x: l2.start.x - projL2Start.x, y: l2.start.y - projL2Start.y };
 
-    if (mode === 'BEAM') {
+    // UPDATED: Use Boolean Subtraction for BOTH Beams and Walls to handle obstacles (Columns) in the middle
+    if (mode === 'BEAM' || mode === 'WALL') {
         const blockers: [number, number][] = [];
         
         for (const obs of obstacles) {
@@ -404,6 +405,14 @@ const createPolygonFromPair = (
         }
         
         const mergedBlockers = mergeIntervals(blockers);
+        // For Walls, we might want to use tMaxOverlap instead of tMaxUnion if we strictly follow the overlap
+        // But usually extending to union closes corners. Let's keep logic consistent.
+        // For walls, trim to union might be better for corners? 
+        // Actually, walls usually rely on the "Trim/Extend" logic for corners. 
+        // But the user requested splitting at columns.
+        // Let's use Union, but then clamp to Overlap if it's open space?
+        // Safe bet: Use Union, but subtract obstacles.
+        
         const validIntervals = subtractIntervals(tMinUnion, tMaxUnion, mergedBlockers);
         
         const results: DxfEntity[] = [];
@@ -432,68 +441,9 @@ const createPolygonFromPair = (
         
         return results;
 
-    } else {
-        let finalStartT = tMinOverlap;
-        let finalEndT = tMaxOverlap;
-
-        const cornerTolerance = gap * 2.5;
-        const startDiff = tMinOverlap - tMinUnion;
-        const endDiff = tMaxUnion - tMaxOverlap;
-
-        if (startDiff > 0 && startDiff < cornerTolerance) finalStartT = tMinUnion;
-        else finalStartT = tMinOverlap;
-
-        if (endDiff > 0 && endDiff < cornerTolerance) finalEndT = tMaxUnion;
-        else finalEndT = tMaxOverlap;
-
-        const SNAP_TOLERANCE = gap * 1.5;
-
-        // Trim/Extend Logic
-        const endCenter = { 
-            x: l1.start.x + u.x * finalEndT + vPerp.x * 0.5,
-            y: l1.start.y + u.y * finalEndT + vPerp.y * 0.5
-        };
-        const distFwd = getRayIntersection(endCenter, u, obstacles);
-        if (distFwd !== Infinity && distFwd < SNAP_TOLERANCE) {
-             finalEndT = finalEndT + distFwd;
-        }
-
-        const startCenter = { 
-            x: l1.start.x + u.x * finalStartT + vPerp.x * 0.5,
-            y: l1.start.y + u.y * finalStartT + vPerp.y * 0.5
-        };
-        const distBack = getRayIntersection(startCenter, { x: -u.x, y: -u.y }, obstacles);
-        if (distBack !== Infinity && distBack < SNAP_TOLERANCE) {
-             finalStartT = finalStartT - distBack;
-        }
-
-        if (finalEndT - finalStartT < 50) return [];
-
-        const p1 = { x: l1.start.x + u.x * finalStartT, y: l1.start.y + u.y * finalStartT };
-        const p2 = { x: l1.start.x + u.x * finalEndT, y: l1.start.y + u.y * finalEndT };
-
-        const projX = l1.start.x + u.x * tB1;
-        const projY = l1.start.y + u.y * tB1;
-        const offX = l2.start.x - projX;
-        const offY = l2.start.y - projY;
-        const offLen = Math.sqrt(offX*offX + offY*offY);
-        
-        const scale = (offLen > 0) ? (gap / offLen) : 1;
-        const wX = offX * scale;
-        const wY = offY * scale;
-
-        const c1 = p1;
-        const c2 = p2;
-        const c3 = { x: p2.x + wX, y: p2.y + wY };
-        const c4 = { x: p1.x + wX, y: p1.y + wY };
-
-        return [{
-            type: EntityType.LWPOLYLINE,
-            layer: layer,
-            vertices: [c1, c2, c3, c4],
-            closed: true
-        }];
-    }
+    } 
+    
+    return [];
 };
 
 export const findParallelPolygons = (
@@ -553,11 +503,25 @@ export const findParallelPolygons = (
        const gap = dist;
 
        if (mode === 'WALL') {
-             const axisFound = hasAxisBetween(l1, l2, axisLines, gap);
-             if (axisFound) {
-                 isValid = true;
+             // For walls, we now strictly respect validWidths if they exist (auto-detected)
+             if (validWidths.size > 0) {
+                 for (const w of validWidths) {
+                     if (Math.abs(gap - w) <= 10) { // Tolerance 10mm
+                         isValid = true;
+                         break;
+                     }
+                 }
+             } else {
+                 // Fallback if no detection (should be rare if estimate is called)
+                 if (gap >= 100 && gap <= 500) isValid = true;
+             }
+
+             if (isValid) {
+                 const axisFound = hasAxisBetween(l1, l2, axisLines, gap);
+                 if (!axisFound) isValid = false;
              }
        } else {
+             // Beam Mode
              if (validWidths.size > 0) {
                  for (const w of validWidths) {
                      if (Math.abs(gap - w) <= 2.5) {

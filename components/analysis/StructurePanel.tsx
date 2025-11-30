@@ -1,9 +1,8 @@
-
 import React from 'react';
-import { Button } from '../Button';
 import { ProjectFile } from '../../types';
-import { Grid, GitMerge, Square, Box, Calculator } from 'lucide-react';
 import { runCalculateSplitRegions, runMergeViews, runCalculateColumns, runCalculateWalls, runCalculateBeams } from '../../domains/structure';
+import { Button } from '../Button';
+import { Grid, Merge, Box, ArrowRightLeft, AlignJustify } from 'lucide-react';
 
 interface StructurePanelProps {
     activeProject: ProjectFile | null;
@@ -13,71 +12,86 @@ interface StructurePanelProps {
     setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>;
 }
 
-export const StructurePanel: React.FC<StructurePanelProps> = ({ 
-    activeProject, 
+export const StructurePanel: React.FC<StructurePanelProps> = ({
+    activeProject,
     projects,
     isLoading,
     setProjects,
     setLayerColors
 }) => {
     return (
-        <div className="space-y-3 animate-in fade-in slide-in-from-left-4 duration-300">
-            <div className="space-y-1">
-                <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider ml-1">1. View Setup</p>
+        <div className="space-y-4 animate-in fade-in slide-in-from-left-2 duration-300">
+            {/* Step 1: View Setup */}
+            <div className="space-y-2">
+                <h3 className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider flex items-center">
+                    <span className="w-4 h-4 rounded-full bg-slate-800 text-slate-300 flex items-center justify-center mr-2 text-[9px]">1</span>
+                    View Setup
+                </h3>
                 <div className="grid grid-cols-2 gap-2">
-                     <Button 
-                        onClick={() => activeProject && runCalculateSplitRegions(activeProject, setProjects, setLayerColors)} 
+                    <Button 
+                        onClick={() => activeProject && runCalculateSplitRegions(activeProject, setProjects, setLayerColors)}
                         disabled={!activeProject || isLoading} 
-                        variant="primary" 
-                        className="w-full justify-center text-xs bg-purple-600 hover:bg-purple-700"
-                        title="Split View / Identify Blocks"
-                      >
-                        <Grid size={14} className="mr-1"/> Split
-                      </Button>
-                      <Button 
-                        onClick={() => activeProject && runMergeViews(activeProject, setProjects, setLayerColors)} 
+                        variant="secondary" 
+                        className="w-full text-xs py-1.5"
+                        icon={<Grid size={12}/>}
+                    >
+                        Split Views
+                    </Button>
+                    <Button 
+                        onClick={() => activeProject && runMergeViews(activeProject, setProjects, setLayerColors)}
                         disabled={!activeProject || isLoading} 
-                        variant="primary" 
-                        className="w-full justify-center text-xs bg-indigo-600 hover:bg-indigo-700"
-                        title="Merge Split Views"
-                      >
-                        <GitMerge size={14} className="mr-1"/> Merge
-                      </Button>
+                        variant="secondary" 
+                        className="w-full text-xs py-1.5"
+                        icon={<Merge size={12}/>}
+                    >
+                        Merge Views
+                    </Button>
                 </div>
             </div>
 
-            <div className="space-y-1">
-                <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider ml-1">2. Vertical Elements</p>
+            {/* Step 2: Vertical Elements */}
+            <div className="space-y-2">
+                <h3 className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider flex items-center">
+                    <span className="w-4 h-4 rounded-full bg-slate-800 text-slate-300 flex items-center justify-center mr-2 text-[9px]">2</span>
+                    Vertical Elements
+                </h3>
                 <div className="grid grid-cols-2 gap-2">
-                     <Button 
-                        onClick={() => activeProject && runCalculateColumns(activeProject, projects, setProjects, setLayerColors)} 
+                    <Button 
+                        onClick={() => activeProject && runCalculateColumns(activeProject, projects, setProjects, setLayerColors)}
                         disabled={!activeProject || isLoading} 
-                        variant="primary" 
-                        className="w-full justify-center text-xs bg-amber-600 hover:bg-amber-700"
-                      >
-                        <Square size={14} className="mr-1"/> Columns
-                      </Button>
-                      <Button 
-                        onClick={() => activeProject && runCalculateWalls(activeProject, projects, setProjects, setLayerColors)} 
+                        variant="secondary" 
+                        className="w-full text-xs py-1.5"
+                        icon={<Box size={12}/>}
+                    >
+                        Columns
+                    </Button>
+                    <Button 
+                        onClick={() => activeProject && runCalculateWalls(activeProject, projects, setProjects, setLayerColors)}
                         disabled={!activeProject || isLoading} 
-                        variant="primary" 
-                        className="w-full justify-center text-xs bg-slate-600 hover:bg-slate-700"
-                      >
-                        <Box size={14} className="mr-1"/> Walls
-                      </Button>
+                        variant="secondary" 
+                        className="w-full text-xs py-1.5"
+                        icon={<AlignJustify size={12} className="rotate-90"/>}
+                    >
+                        Walls
+                    </Button>
                 </div>
             </div>
 
-            <div className="space-y-1">
-                <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider ml-1">3. Horizontal Elements</p>
-                 <Button 
-                    onClick={() => activeProject && runCalculateBeams(activeProject, projects, setProjects, setLayerColors)} 
+            {/* Step 3: Horizontal Elements */}
+            <div className="space-y-2">
+                <h3 className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider flex items-center">
+                    <span className="w-4 h-4 rounded-full bg-slate-800 text-slate-300 flex items-center justify-center mr-2 text-[9px]">3</span>
+                    Horizontal Elements
+                </h3>
+                <Button 
+                    onClick={() => activeProject && runCalculateBeams(activeProject, projects, setProjects, setLayerColors)}
                     disabled={!activeProject || isLoading} 
-                    variant="primary" 
-                    className="w-full justify-center text-xs bg-green-600 hover:bg-green-700"
-                  >
-                    <Calculator size={14} className="mr-1"/> Calculate Beams
-                  </Button>
+                    variant="secondary" 
+                    className="w-full text-xs py-1.5"
+                    icon={<ArrowRightLeft size={12}/>}
+                >
+                    Calculate Beams
+                </Button>
             </div>
         </div>
     );

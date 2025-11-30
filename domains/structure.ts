@@ -1,6 +1,7 @@
+import React from 'react';
 import { DxfEntity, EntityType, Point, Bounds, ProjectFile, ViewportRegion } from '../types';
 import { extractEntities } from '../utils/dxfHelpers';
-import { getBeamProperties, getCenter, calculateLength, findParallelPolygons, groupEntitiesByProximity, findTitleForBounds, parseViewportTitle, getGridIntersections, calculateMergeVector, getEntityBounds } from '../utils/geometryUtils';
+import { getBeamProperties, getCenter, calculateLength, findParallelPolygons, groupEntitiesByProximity, findTitleForBounds, parseViewportTitle, getGridIntersections, calculateMergeVector, getEntityBounds, distancePointToLine } from '../utils/geometryUtils';
 
 // --- HELPERS ---
 
@@ -65,22 +66,6 @@ const updateProject = (
 
 // --- SPATIAL FILTERING HELPERS ---
 
-const getMergeBaseBounds = (project: ProjectFile): Bounds[] | null => {
-    // If no regions defined, we can't filter, so return null (implies "use everything")
-    if (!project.splitRegions || project.splitRegions.length === 0) return null;
-
-    // Filter for "Base Views":
-    // 1. Regions with index 1 (e.g. "Plan (1)")
-    // 2. Regions with no index info (Single view drawings)
-    return project.splitRegions
-        .filter(r => !r.info || r.info.index === 1)
-        .map(r => r.bounds);
-};
-
-const isPointInBounds = (p: Point, b: Bounds) => {
-    return p.x >= b.minX && p.x <= b.maxX && p.y >= b.minY && p.y <= b.maxY;
-};
-
 const expandBounds = (b: Bounds, margin: number): Bounds => ({
     minX: b.minX - margin,
     minY: b.minY - margin,
@@ -88,40 +73,98 @@ const expandBounds = (b: Bounds, margin: number): Bounds => ({
     maxY: b.maxY + margin
 });
 
+const getMergeBaseBounds = (project: ProjectFile, margin: number = 0): Bounds[] | null => {
+    if (!project.splitRegions || project.splitRegions.length === 0) return null;
+
+    return project.splitRegions
+        .filter(r => !r.info || r.info.index === 1)
+        .map(r => margin > 0 ? expandBounds(r.bounds, margin) : r.bounds);
+};
+
+const isPointInBounds = (p: Point, b: Bounds) => {
+    return p.x >= b.minX && p.x <= b.maxX && p.y >= b.minY && p.y <= b.maxY;
+};
+
 const boundsOverlap = (a: Bounds, b: Bounds): boolean => {
     return !(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
 };
 
 const isEntityInBounds = (ent: DxfEntity, boundsList: Bounds[]): boolean => {
-    // Check if entity is inside ANY of the base view bounds
     return boundsList.some(b => {
-         // Check Start Point
          if (ent.start && isPointInBounds(ent.start, b)) return true;
-         
-         // Check End Point (Line/Polyline)
          if (ent.end && isPointInBounds(ent.end, b)) return true;
-
-         // Check Dimension points
          if (ent.type === EntityType.DIMENSION) {
              if (ent.measureStart && isPointInBounds(ent.measureStart, b)) return true;
              if (ent.measureEnd && isPointInBounds(ent.measureEnd, b)) return true;
          }
-
-         // Check Bounding Box Center (Fallback)
          const entB = getEntityBounds(ent);
          if (entB) {
              const cx = (entB.minX + entB.maxX)/2;
              const cy = (entB.minY + entB.maxY)/2;
              if (isPointInBounds({x: cx, y: cy}, b)) return true;
+             if (boundsOverlap(entB, b)) return true;
          }
-
          return false;
     });
 };
 
 const filterEntitiesInBounds = (entities: DxfEntity[], boundsList: Bounds[] | null): DxfEntity[] => {
-    if (!boundsList || boundsList.length === 0) return entities; // No filter applied
+    if (!boundsList || boundsList.length === 0) return entities;
     return entities.filter(e => isEntityInBounds(e, boundsList));
+};
+
+// --- WALL THICKNESS ESTIMATION ---
+const estimateWallThicknesses = (lines: DxfEntity[]): Set<number> => {
+    const thicknessCounts = new Map<number, number>();
+    const VALID_THICKNESSES = [100, 120, 150, 180, 200, 240, 250, 300, 350, 370, 400, 500, 600];
+    
+    // Sample a subset if too many lines to avoid O(N^2) lag
+    const sample = lines.length > 2000 ? lines.filter((_, i) => i % 2 === 0) : lines;
+
+    for (let i = 0; i < sample.length; i++) {
+        const l1 = sample[i];
+        if (!l1.start || !l1.end) continue;
+        const v1 = { x: l1.end.x - l1.start.x, y: l1.end.y - l1.start.y };
+        const len1 = Math.sqrt(v1.x*v1.x + v1.y*v1.y);
+        if (len1 < 100) continue;
+
+        for (let j = i + 1; j < sample.length; j++) {
+            const l2 = sample[j];
+            if (!l2.start || !l2.end) continue;
+            
+            // Fast check: length similarity not required for walls (one can be long, one short)
+            
+            // Check parallelism
+            const v2 = { x: l2.end.x - l2.start.x, y: l2.end.y - l2.start.y };
+            const len2 = Math.sqrt(v2.x*v2.x + v2.y*v2.y);
+            const dot = (v1.x * v2.x + v1.y * v2.y) / (len1 * len2);
+            if (Math.abs(dot) < 0.98) continue;
+
+            // Check distance
+            const center = { x: (l2.start.x + l2.end.x)/2, y: (l2.start.y + l2.end.y)/2 };
+            const dist = distancePointToLine(center, l1.start, l1.end);
+            
+            if (dist > 50 && dist < 800) {
+                // Round to nearest 10
+                const rounded = Math.round(dist / 10) * 10;
+                thicknessCounts.set(rounded, (thicknessCounts.get(rounded) || 0) + 1);
+            }
+        }
+    }
+
+    const result = new Set<number>();
+    // Filter for frequent thicknesses that match standard construction sizes
+    thicknessCounts.forEach((count, thick) => {
+        if (count > 2) { // Threshold
+             // Check if it's close to a standard size or just a very frequent measurement
+             const isStandard = VALID_THICKNESSES.some(std => Math.abs(std - thick) <= 5);
+             if (isStandard || count > 10) {
+                 result.add(thick);
+             }
+        }
+    });
+    
+    return result;
 };
 
 
@@ -133,10 +176,9 @@ export const runCalculateBeams = (
     setProjects: React.Dispatch<React.SetStateAction<ProjectFile[]>>,
     setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>
 ) => {
-    const baseBounds = getMergeBaseBounds(activeProject);
+    const baseBounds = getMergeBaseBounds(activeProject, 2500);
     const currentData = activeProject.data;
     
-    // 1. Extract raw candidates
     const beamTextLayers = currentData.layers.filter(l => l.includes('梁筋'));
     const beamLayers = ['BEAM', 'BEAM_CON'];
     
@@ -144,28 +186,20 @@ export const runCalculateBeams = (
     let rawAxisEntities = extractEntities(['AXIS'], currentData.entities, currentData.blocks, currentData.blockBasePoints).filter(e => e.type === EntityType.LINE);
     let rawTextEntities = extractEntities(beamTextLayers, currentData.entities, currentData.blocks, currentData.blockBasePoints).filter(e => e.type === EntityType.TEXT);
 
-    // 2. Filter Candidates to Base View (Avoid calculating View 2, 3...)
     const entities = filterEntitiesInBounds(rawEntities, baseBounds);
     const axisEntities = filterEntitiesInBounds(rawAxisEntities, baseBounds);
     const textEntities = filterEntitiesInBounds(rawTextEntities, baseBounds);
 
-    // 3. Prepare Obstacles (Walls/Columns)
-    // We should also filter obstacles to the same bounds to optimize
     let obstacles = extractEntities(['WALL', 'COLU', 'COLUMN', 'WALL_CALC', 'COLU_CALC'], currentData.entities, currentData.blocks, currentData.blockBasePoints);
     obstacles = filterEntitiesInBounds(obstacles, baseBounds);
     
-    // Fallback to global project search if local obstacles are sparse (e.g. XRef)
     if (obstacles.length < 10) {
          const globalObstacles = findEntitiesInAllProjects(projects, /wall|colu|column|柱|墙/i);
-         // Even global obstacles should ideally be filtered if they are in the same coordinate space, 
-         // but usually XRefs match the coordinate space. For safety, we keep them all or filter if possible.
          obstacles = globalObstacles;
     }
 
     if (axisEntities.length === 0) {
-        // Fallback axis
         const globalAxis = findEntitiesInAllProjects(projects, /^AXIS$/i).filter(e => e.type === EntityType.LINE);
-        // Only take those in bounds
         globalAxis.forEach(ax => {
             if (!baseBounds || isEntityInBounds(ax, baseBounds)) axisEntities.push(ax);
         });
@@ -190,8 +224,6 @@ export const runCalculateBeams = (
         }
     });
     
-    const foundWidthsArray = Array.from(validWidths).sort((a,b) => a-b);
-    
     const resultLayer = 'BEAM_CALC';
     const contextLayers = ['WALL', 'COLU', 'AXIS', ...beamTextLayers];
 
@@ -199,7 +231,6 @@ export const runCalculateBeams = (
     const lines = entities.filter(e => e.type === EntityType.LINE);
     const polylines = entities.filter(e => e.type === EntityType.LWPOLYLINE && e.closed);
 
-    // Run Algorithm
     const generatedPolygons = findParallelPolygons(lines, 1200, resultLayer, obstacles, axisEntities, textEntities, 'BEAM', validWidths);
     const existingPolygons = polylines.map(p => ({ ...p, layer: resultLayer }));
 
@@ -224,17 +255,12 @@ export const runCalculateBeams = (
     });
 
     if (newEntities.length === 0) {
-        console.log("No calculable beams found. (Note: Valid beams require pairs of lines matching text annotations like '200x500').");
+        console.log("No calculable beams found.");
         return;
     }
 
     updateProject(activeProject, setProjects, setLayerColors, resultLayer, newEntities, '#00FF00', contextLayers, true);
-    
-    let msg = `Calculated ${allBeams.length} beam segments.`;
-    if (baseBounds) msg += ` (Restricted to ${baseBounds.length} merged regions)`;
-    if (validWidths.size > 0) msg += `\nUsed widths: ${foundWidthsArray.join(', ')}`;
-    
-    console.log(msg);
+    console.log(`Calculated ${allBeams.length} beam segments.`);
 };
 
 export const runCalculateWalls = (
@@ -243,21 +269,22 @@ export const runCalculateWalls = (
     setProjects: React.Dispatch<React.SetStateAction<ProjectFile[]>>,
     setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>
 ) => {
-    const baseBounds = getMergeBaseBounds(activeProject);
+    const baseBounds = getMergeBaseBounds(activeProject, 2500);
 
     // 1. Prepare Layers
     const targetLayers = activeProject.data.layers.filter(l => /wall|墙/i.test(l));
     
-    // 2. Prepare Obstacles (Columns)
+    // 2. Prepare Obstacles (COLUMNS ONLY - Walls stop at columns, but continue through Beams)
     let columnObstacles = findEntitiesInAllProjects(projects, /colu|column|柱/i);
-    // Filter obstacles to relevant area
+    // Include calculated columns if they exist
+    const calcColumns = extractEntities(['COLU_CALC'], activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
+    columnObstacles = [...columnObstacles, ...calcColumns];
     columnObstacles = filterEntitiesInBounds(columnObstacles, baseBounds);
 
     // 3. Prepare Axis
     const rawAxisEntities = extractEntities(['AXIS'], activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
     let axisLines: DxfEntity[] = [];
     
-    // Convert Polyline axis to Lines
     rawAxisEntities.forEach(ent => {
         if (ent.type === EntityType.LINE && ent.start && ent.end) {
             axisLines.push(ent);
@@ -272,11 +299,9 @@ export const runCalculateWalls = (
         }
     });
 
-    // Filter Axis
     axisLines = filterEntitiesInBounds(axisLines, baseBounds);
     
     if (axisLines.length === 0) {
-        // Fallback global axis
         const otherAxis = findEntitiesInAllProjects(projects, /^AXIS$/i);
         otherAxis.forEach(ent => {
              if (ent.type === EntityType.LINE) {
@@ -290,8 +315,6 @@ export const runCalculateWalls = (
 
     // 4. Extract Wall Candidates
     let rawWallEntities = extractEntities(targetLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
-    
-    // Filter Candidates
     rawWallEntities = filterEntitiesInBounds(rawWallEntities, baseBounds);
     
     const candidateLines: DxfEntity[] = [];
@@ -320,20 +343,29 @@ export const runCalculateWalls = (
         }
     });
 
+    // 5. Auto-Detect Thickness
+    const estimatedWidths = estimateWallThicknesses(candidateLines);
+    if (estimatedWidths.size === 0) {
+        // Fallback defaults if detection fails
+        estimatedWidths.add(200);
+        estimatedWidths.add(240);
+        estimatedWidths.add(100);
+    }
+    const widthStr = Array.from(estimatedWidths).join(', ');
+
     // Run Algorithm
-    const allObstacles = [...columnObstacles, ...rawWallEntities]; // Self-obstruction for trimming
-    const generatedWalls = findParallelPolygons(candidateLines, 600, resultLayer, allObstacles, axisLines, [], 'WALL');
+    const generatedWalls = findParallelPolygons(candidateLines, 600, resultLayer, columnObstacles, axisLines, [], 'WALL', estimatedWidths);
     
     const newEntities: DxfEntity[] = [...generatedWalls, ...existingClosedPolygons];
 
     if (newEntities.length === 0) {
-        console.log("No valid wall segments found (Must have corresponding Axis line).");
+        console.log("No valid wall segments found.");
         return;
     }
 
     updateProject(activeProject, setProjects, setLayerColors, resultLayer, newEntities, '#94a3b8', contextLayers, true);
     
-    let msg = `Marked ${newEntities.length} wall segments.`;
+    let msg = `Marked ${newEntities.length} wall segments. (Thicknesses: ${widthStr})`;
     if (baseBounds) msg += ` (Restricted to ${baseBounds.length} merged regions)`;
     console.log(msg);
 };
@@ -344,14 +376,13 @@ export const runCalculateColumns = (
     setProjects: React.Dispatch<React.SetStateAction<ProjectFile[]>>,
     setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>
 ) => {
-    const baseBounds = getMergeBaseBounds(activeProject);
+    const baseBounds = getMergeBaseBounds(activeProject, 2500);
     const targetLayers = activeProject.data.layers.filter(l => /colu|column|柱/i.test(l));
     const resultLayer = 'COLU_CALC';
     const contextLayers = ['AXIS', 'WALL_CALC', 'BEAM_CALC'];
 
     let rawEntities = extractEntities(targetLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
 
-    // Filter Columns to Base View
     rawEntities = filterEntitiesInBounds(rawEntities, baseBounds);
 
     const columnEntities = rawEntities.filter(e => 
@@ -453,7 +484,6 @@ export const runCalculateSplitRegions = (
         return null;
     }
 
-    // Special handling for updateProject because this one modifies 'splitRegions' too
     const updatedData = {
         ...activeProject.data,
         entities: [...activeProject.data.entities, ...newEntities, ...debugEntities],
@@ -507,49 +537,40 @@ export const runMergeViews = (
     const allEntities = extractEntities(activeProject.data.layers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
 
     let mergedCount = 0;
-    const LABEL_MARGIN = 2000; // allow labels just outside the viewport to be merged
+    const LABEL_MARGIN = 2000; 
 
     const isLabelEntity = (ent: DxfEntity): boolean => {
         const u = ent.layer.toUpperCase();
-        // Exclude axis-related layers from labels
         if (u.includes('AXIS') || u.includes('轴')) return false;
         const layerLooksLabel = u.includes('标注') || u.includes('DIM') || u.includes('LABEL') || /^Z[\u4e00-\u9fa5]/.test(ent.layer);
 
-        if (ent.type === EntityType.DIMENSION) return true; // dimensions are always labels
+        if (ent.type === EntityType.DIMENSION) return true;
         if (ent.type === EntityType.TEXT || ent.type === EntityType.ATTRIB) return layerLooksLabel;
         return layerLooksLabel;
     };
 
     const shouldIncludeEntity = (ent: DxfEntity, bounds: Bounds): boolean => {
          const expanded = expandBounds(bounds, LABEL_MARGIN);
-         // Check Start Point
          if (ent.start && isPointInBounds(ent.start, expanded)) return true;
-         
-         // Check Dimension points
          if (ent.type === EntityType.DIMENSION) {
              if (ent.measureStart && isPointInBounds(ent.measureStart, expanded)) return true;
              if (ent.measureEnd && isPointInBounds(ent.measureEnd, expanded)) return true;
              if (ent.end && isPointInBounds(ent.end, expanded)) return true;
          }
-
-         // Check Bounding Box Center (Fallback)
          const b = getEntityBounds(ent);
          if (b) {
              const cx = (b.minX + b.maxX)/2;
              const cy = (b.minY + b.maxY)/2;
              if (isPointInBounds({x: cx, y: cy}, expanded)) return true;
-             // If the entity bbox overlaps the expanded viewport, also include
              if (boundsOverlap(b, expanded)) return true;
          }
          return false;
     };
 
-    // Iterate through all groups (including single-view groups which have no index)
     Object.entries(groups).forEach(([prefix, views]) => {
         views.sort((a, b) => (a.info?.index ?? 1) - (b.info?.index ?? 1));
         const baseView = views[0]; 
         
-        // Base View: Keep labels in place
         allEntities.forEach(ent => {
            if (shouldIncludeEntity(ent, baseView.bounds) && isLabelEntity(ent)) {
                const clone = { ...ent, layer: resultLayer };
