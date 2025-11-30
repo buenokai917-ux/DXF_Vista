@@ -1,8 +1,9 @@
+
 import React from 'react';
 import { ProjectFile } from '../../types';
-import { runCalculateSplitRegions, runMergeViews, runCalculateColumns, runCalculateWalls, runCalculateBeams } from '../../domains/structure';
+import { runCalculateSplitRegions, runMergeViews, runCalculateColumns, runCalculateWalls, runBeamHardSplit, runBeamAttributeMounting, runBeamTopologyMerge, runBeamPropagation } from '../../domains/structure';
 import { Button } from '../Button';
-import { Grid, Merge, Box, ArrowRightLeft, AlignJustify } from 'lucide-react';
+import { Grid, Merge, Box, ArrowRightLeft, AlignJustify, Tag, GitMerge, Radio } from 'lucide-react';
 
 interface StructurePanelProps {
     activeProject: ProjectFile | null;
@@ -77,21 +78,50 @@ export const StructurePanel: React.FC<StructurePanelProps> = ({
                 </div>
             </div>
 
-            {/* Step 3: Horizontal Elements */}
+            {/* Step 3: Horizontal Elements (Pipeline) */}
             <div className="space-y-2">
                 <h3 className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider flex items-center">
                     <span className="w-4 h-4 rounded-full bg-slate-800 text-slate-300 flex items-center justify-center mr-2 text-[9px]">3</span>
-                    Horizontal Elements
+                    Beam Pipeline
                 </h3>
-                <Button 
-                    onClick={() => activeProject && runCalculateBeams(activeProject, projects, setProjects, setLayerColors)}
-                    disabled={!activeProject || isLoading} 
-                    variant="secondary" 
-                    className="w-full text-xs py-1.5"
-                    icon={<ArrowRightLeft size={12}/>}
-                >
-                    Calculate Beams
-                </Button>
+                <div className="flex flex-col gap-2">
+                    <Button 
+                        onClick={() => activeProject && runBeamHardSplit(activeProject, projects, setProjects, setLayerColors)}
+                        disabled={!activeProject || isLoading} 
+                        variant="secondary" 
+                        className="w-full text-xs py-1.5 justify-start pl-3"
+                        icon={<ArrowRightLeft size={12} className="text-green-500"/>}
+                    >
+                        Step 1: Hard Split (Geometry)
+                    </Button>
+                    <Button 
+                        onClick={() => activeProject && runBeamAttributeMounting(activeProject, projects, setProjects, setLayerColors)}
+                        disabled={!activeProject || isLoading} 
+                        variant="secondary" 
+                        className="w-full text-xs py-1.5 justify-start pl-3"
+                        icon={<Tag size={12} className="text-teal-500"/>}
+                    >
+                        Step 2: Mount Attributes
+                    </Button>
+                    <Button 
+                        onClick={() => activeProject && runBeamTopologyMerge(activeProject, projects, setProjects, setLayerColors)}
+                        disabled={!activeProject || isLoading} 
+                        variant="secondary" 
+                        className="w-full text-xs py-1.5 justify-start pl-3"
+                        icon={<GitMerge size={12} className="text-amber-500"/>}
+                    >
+                        Step 3: Topology Merge
+                    </Button>
+                    <Button 
+                        onClick={() => activeProject && runBeamPropagation(activeProject, projects, setProjects, setLayerColors)}
+                        disabled={!activeProject || isLoading} 
+                        variant="secondary" 
+                        className="w-full text-xs py-1.5 justify-start pl-3"
+                        icon={<Radio size={12} className="text-indigo-500"/>}
+                    >
+                        Step 4: Propagation
+                    </Button>
+                </div>
             </div>
         </div>
     );

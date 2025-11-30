@@ -9,7 +9,7 @@ import { Viewer } from './components/Viewer';
 import { Button } from './components/Button';
 import { renderDxfToCanvas } from './utils/renderUtils';
 import { AnalysisSidebar } from './components/AnalysisSidebar';
-import { Layers, Image as ImageIcon, FileText, Settings, X, RefreshCw, Search, Plus, File as FileIcon, ChevronUp, ChevronDown } from 'lucide-react';
+import { Layers, Image as ImageIcon, FileText, Settings, X, RefreshCw, Search, Plus, File as FileIcon, ChevronUp, ChevronDown, Hammer } from 'lucide-react';
 
 // Standard CAD Colors (Index 1-7 + Grays + Common)
 const CAD_COLORS = [
@@ -27,6 +27,8 @@ const CAD_COLORS = [
   '#800080', // Purple
 ];
 
+type SidebarTab = 'LAYERS' | 'ANALYSIS';
+
 const App: React.FC = () => {
   // --- STATE ---
   const [projects, setProjects] = useState<ProjectFile[]>([]);
@@ -34,6 +36,7 @@ const App: React.FC = () => {
   const [layerColors, setLayerColors] = useState<LayerColors>({});
   const [layerSearchTerm, setLayerSearchTerm] = useState('');
   const [isSidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarTab, setSidebarTab] = useState<SidebarTab>('LAYERS');
   const [isLoading, setIsLoading] = useState(false);
   const [pickingColorLayer, setPickingColorLayer] = useState<string | null>(null);
   
@@ -441,7 +444,7 @@ const App: React.FC = () => {
           isSidebarOpen ? 'w-80' : 'w-0'
         } bg-slate-900 border-r border-slate-800 transition-all duration-300 flex flex-col relative shrink-0`}
       >
-        <div className="p-4 border-b border-slate-800 flex justify-between items-center">
+        <div className="p-4 border-b border-slate-800 flex justify-between items-center shrink-0">
           <h1 className="font-bold text-xl flex items-center gap-2 text-blue-400">
             <Settings className="w-5 h-5" />
             DXF Vista
@@ -451,127 +454,166 @@ const App: React.FC = () => {
           </button>
         </div>
 
-        <div className="p-4 border-b border-slate-800 space-y-4">
-           {/* Upload */}
-           <label className="block w-full cursor-pointer group">
-              <div className="flex flex-col items-center justify-center w-full h-16 border-2 border-slate-700 border-dashed rounded-lg bg-slate-800/50 hover:bg-slate-800 hover:border-blue-500 transition-all">
-                  <div className="flex flex-col items-center justify-center pt-1 pb-1">
-                      <Plus className="w-5 h-5 mb-1 text-slate-400 group-hover:text-blue-400" />
-                      <p className="text-xs text-slate-400">Add DXF Files</p>
-                  </div>
-                  <input type="file" accept=".dxf" multiple className="hidden" onChange={handleFileUpload} />
-              </div>
-           </label>
+        {/* TAB SWITCHER */}
+        <div className="flex border-b border-slate-800 shrink-0">
+             <button 
+                onClick={() => setSidebarTab('LAYERS')}
+                className={`flex-1 py-3 text-xs font-medium uppercase tracking-wider transition-colors ${
+                    sidebarTab === 'LAYERS' 
+                    ? 'text-blue-400 border-b-2 border-blue-400 bg-slate-800/50' 
+                    : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800'
+                }`}
+             >
+                 <div className="flex items-center justify-center gap-2">
+                     <Layers size={14} /> Layers
+                 </div>
+             </button>
+             <button 
+                onClick={() => setSidebarTab('ANALYSIS')}
+                className={`flex-1 py-3 text-xs font-medium uppercase tracking-wider transition-colors ${
+                    sidebarTab === 'ANALYSIS' 
+                    ? 'text-blue-400 border-b-2 border-blue-400 bg-slate-800/50' 
+                    : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800'
+                }`}
+             >
+                 <div className="flex items-center justify-center gap-2">
+                     <Hammer size={14} /> Analysis
+                 </div>
+             </button>
         </div>
 
-        {/* ANALYSIS SIDEBAR */}
-        <AnalysisSidebar 
-            activeProject={activeProject}
-            projects={projects}
-            isLoading={isLoading}
-            analysisDomain={analysisDomain}
-            setAnalysisDomain={setAnalysisDomain}
-            setProjects={setProjects}
-            setLayerColors={setLayerColors}
-        />
-
-        {/* Layer List Area */}
-        <div className="flex-1 overflow-y-auto p-4 flex flex-col min-h-0">
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-2">
-              <Layers size={14} /> Layers
-            </h2>
-            {activeProject && (
-              <button onClick={toggleAllLayers} className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1">
-                <RefreshCw size={10} />
-                {activeProject.activeLayers.size === activeProject.data.layers.length ? 'Hide All' : 'Show All'}
-              </button>
-            )}
-          </div>
-
-          {/* Layer Search */}
-          {activeProject && (
-            <div className="relative mb-3 shrink-0">
-              <input 
-                type="text" 
-                placeholder="Filter layers..." 
-                value={layerSearchTerm}
-                onChange={(e) => setLayerSearchTerm(e.target.value)}
-                className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-1.5 pl-8 text-xs focus:ring-1 focus:ring-blue-500 outline-none"
-              />
-              <Search className="absolute left-2.5 top-1.5 text-slate-500 w-3.5 h-3.5" />
-            </div>
-          )}
-
-          {isLoading ? (
-            <div className="flex items-center justify-center py-8">
-               <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500"></div>
-            </div>
-          ) : !activeProject ? (
-            <div className="text-center text-slate-600 text-sm py-8 flex-1 flex flex-col items-center justify-center border-2 border-dashed border-slate-800 rounded">
-              <FileIcon className="w-8 h-8 mb-2 opacity-50"/>
-              No file selected
-            </div>
-          ) : (
-            <div className="space-y-1 overflow-y-auto flex-1 pr-1 custom-scrollbar">
-              {filteredLayers.length === 0 && (
-                <div className="text-xs text-slate-500 text-center py-4">No matching layers</div>
-              )}
-              {filteredLayers.map((layer) => (
-                <div key={layer} className="flex flex-col">
-                    <div 
-                      className={`flex items-center p-2 rounded transition-colors group ${
-                        activeProject.activeLayers.has(layer) ? 'bg-slate-800 text-slate-200' : 'text-slate-500 hover:bg-slate-800/50'
-                      }`}
-                    >
-                      <div 
-                        className="relative w-4 h-4 mr-3 shrink-0 cursor-pointer"
-                        onClick={(e) => {
-                           e.stopPropagation();
-                           setPickingColorLayer(pickingColorLayer === layer ? null : layer);
-                        }} 
-                        title="Click to change color"
-                      >
-                         <div 
-                            className="w-3 h-3 rounded-full absolute top-0.5 left-0.5 border border-slate-600 transition-all hover:scale-125" 
-                            style={{ 
-                              backgroundColor: layerColors[layer],
-                              boxShadow: activeProject.activeLayers.has(layer) ? `0 0 6px ${layerColors[layer]}` : 'none',
-                              opacity: activeProject.activeLayers.has(layer) ? 1 : 0.6
-                            }}
-                         ></div>
-                      </div>
-                      <span 
-                        className="text-sm truncate select-none flex-1 cursor-pointer" 
-                        title={layer}
-                        onClick={() => toggleLayer(layer)}
-                      >
-                        {layer}
-                      </span>
+        {/* SIDEBAR CONTENT AREA */}
+        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+        
+        {/* === TAB 1: LAYERS === */}
+        {sidebarTab === 'LAYERS' && (
+          <>
+            <div className="p-4 border-b border-slate-800 space-y-4 shrink-0">
+                {/* Upload */}
+                <label className="block w-full cursor-pointer group">
+                    <div className="flex flex-col items-center justify-center w-full h-16 border-2 border-slate-700 border-dashed rounded-lg bg-slate-800/50 hover:bg-slate-800 hover:border-blue-500 transition-all">
+                        <div className="flex flex-col items-center justify-center pt-1 pb-1">
+                            <Plus className="w-5 h-5 mb-1 text-slate-400 group-hover:text-blue-400" />
+                            <p className="text-xs text-slate-400">Add DXF Files</p>
+                        </div>
+                        <input type="file" accept=".dxf" multiple className="hidden" onChange={handleFileUpload} />
                     </div>
+                </label>
 
-                    {/* Color Palette Accordion */}
-                    {pickingColorLayer === layer && (
-                       <div className="pl-9 pr-2 pb-3 pt-1 grid grid-cols-6 gap-2 bg-slate-900/50 rounded-b mb-2 animate-in fade-in slide-in-from-top-1 duration-200">
-                           {CAD_COLORS.map(color => (
-                               <button
-                                 key={color}
-                                 className="w-5 h-5 rounded-full border border-slate-600 hover:scale-110 hover:border-white transition-all ring-offset-1 ring-offset-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                 style={{ backgroundColor: color }}
-                                 title={color}
-                                 onClick={(e) => {
-                                     e.stopPropagation();
-                                     handleColorChange(layer, color);
-                                     setPickingColorLayer(null);
-                                 }}
-                               />
-                           ))}
-                       </div>
+                {/* Layer Tools */}
+                <div className="flex items-center justify-between">
+                    <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Layer List</h2>
+                    {activeProject && (
+                    <button onClick={toggleAllLayers} className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1">
+                        <RefreshCw size={10} />
+                        {activeProject.activeLayers.size === activeProject.data.layers.length ? 'Hide All' : 'Show All'}
+                    </button>
                     )}
                 </div>
-              ))}
+
+                {/* Layer Search */}
+                {activeProject && (
+                    <div className="relative">
+                    <input 
+                        type="text" 
+                        placeholder="Filter layers..." 
+                        value={layerSearchTerm}
+                        onChange={(e) => setLayerSearchTerm(e.target.value)}
+                        className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-1.5 pl-8 text-xs focus:ring-1 focus:ring-blue-500 outline-none"
+                    />
+                    <Search className="absolute left-2.5 top-1.5 text-slate-500 w-3.5 h-3.5" />
+                    </div>
+                )}
             </div>
-          )}
+
+            {/* Scrollable Layer List */}
+            {isLoading ? (
+                <div className="flex items-center justify-center py-8">
+                   <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500"></div>
+                </div>
+            ) : !activeProject ? (
+                <div className="text-center text-slate-600 text-sm py-8 flex-1 flex flex-col items-center justify-center">
+                    <FileIcon className="w-8 h-8 mb-2 opacity-50"/>
+                    No file selected
+                </div>
+            ) : (
+                <div className="flex-1 overflow-y-auto p-2 custom-scrollbar">
+                    {filteredLayers.length === 0 && (
+                        <div className="text-xs text-slate-500 text-center py-4">No matching layers</div>
+                    )}
+                    {filteredLayers.map((layer) => (
+                        <div key={layer} className="flex flex-col mb-0.5">
+                            <div 
+                                className={`flex items-center p-2 rounded transition-colors group ${
+                                    activeProject.activeLayers.has(layer) ? 'bg-slate-800 text-slate-200' : 'text-slate-500 hover:bg-slate-800/50'
+                                }`}
+                            >
+                                <div 
+                                    className="relative w-4 h-4 mr-3 shrink-0 cursor-pointer"
+                                    onClick={(e) => {
+                                       e.stopPropagation();
+                                       setPickingColorLayer(pickingColorLayer === layer ? null : layer);
+                                    }} 
+                                    title="Click to change color"
+                                >
+                                     <div 
+                                        className="w-3 h-3 rounded-full absolute top-0.5 left-0.5 border border-slate-600 transition-all hover:scale-125" 
+                                        style={{ 
+                                          backgroundColor: layerColors[layer],
+                                          boxShadow: activeProject.activeLayers.has(layer) ? `0 0 6px ${layerColors[layer]}` : 'none',
+                                          opacity: activeProject.activeLayers.has(layer) ? 1 : 0.6
+                                        }}
+                                     ></div>
+                                </div>
+                                <span 
+                                    className="text-sm truncate select-none flex-1 cursor-pointer" 
+                                    title={layer}
+                                    onClick={() => toggleLayer(layer)}
+                                >
+                                    {layer}
+                                </span>
+                            </div>
+
+                            {/* Color Palette Accordion */}
+                            {pickingColorLayer === layer && (
+                               <div className="pl-9 pr-2 pb-3 pt-1 grid grid-cols-6 gap-2 bg-slate-900/50 rounded-b mb-1 animate-in fade-in slide-in-from-top-1 duration-200">
+                                   {CAD_COLORS.map(color => (
+                                       <button
+                                         key={color}
+                                         className="w-5 h-5 rounded-full border border-slate-600 hover:scale-110 hover:border-white transition-all ring-offset-1 ring-offset-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                         style={{ backgroundColor: color }}
+                                         title={color}
+                                         onClick={(e) => {
+                                             e.stopPropagation();
+                                             handleColorChange(layer, color);
+                                             setPickingColorLayer(null);
+                                         }}
+                                       />
+                                   ))}
+                               </div>
+                            )}
+                        </div>
+                    ))}
+                </div>
+            )}
+          </>
+        )}
+
+        {/* === TAB 2: ANALYSIS === */}
+        {sidebarTab === 'ANALYSIS' && (
+             <div className="flex-1 overflow-y-auto">
+                <AnalysisSidebar 
+                    activeProject={activeProject}
+                    projects={projects}
+                    isLoading={isLoading}
+                    analysisDomain={analysisDomain}
+                    setAnalysisDomain={setAnalysisDomain}
+                    setProjects={setProjects}
+                    setLayerColors={setLayerColors}
+                />
+             </div>
+        )}
+
         </div>
 
         {/* Global Tools Footer */}

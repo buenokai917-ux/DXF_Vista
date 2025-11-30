@@ -185,7 +185,7 @@ export const transformPoint = (p: Point, scale: Point, rotationDeg: number, tran
   };
 };
 
-const rayIntersectsBox = (start: Point, dir: Point, box: Bounds): number => {
+export const rayIntersectsBox = (start: Point, dir: Point, box: Bounds): number => {
     let tmin = -Infinity;
     let tmax = Infinity;
 
@@ -218,7 +218,7 @@ const rayIntersectsBox = (start: Point, dir: Point, box: Bounds): number => {
     return tmin; 
 };
 
-const getRayIntersection = (start: Point, dir: Point, obstacles: DxfEntity[]): number => {
+export const getRayIntersection = (start: Point, dir: Point, obstacles: DxfEntity[]): number => {
     let bestDist = Infinity;
     
     const len = Math.sqrt(dir.x*dir.x + dir.y*dir.y);
@@ -1034,4 +1034,43 @@ export const findLayersAtPoint = (
 
     entities.forEach(e => checkEntity(e, 0, 0, 1, 1, 0));
     return Array.from(found);
+};
+
+export const boundsOverlap = (b1: Bounds, b2: Bounds): boolean => {
+  return !(b1.maxX < b2.minX || b1.minX > b2.maxX || b1.maxY < b2.minY || b1.minY > b2.maxY);
+};
+
+export const isEntityInBounds = (ent: DxfEntity, bounds: Bounds): boolean => {
+  const b = getEntityBounds(ent);
+  if (!b) return false;
+  return boundsOverlap(b, bounds);
+};
+
+export const filterEntitiesInBounds = (entities: DxfEntity[], bounds: Bounds): DxfEntity[] => {
+    return entities.filter(e => isEntityInBounds(e, bounds));
+};
+
+export const findParallelPolygonsBeam = (
+    lines: DxfEntity[], 
+    tolerance: number, 
+    resultLayer: string, 
+    obstacles: DxfEntity[], 
+    axisLines: DxfEntity[], 
+    textEntities: DxfEntity[], 
+    validWidths: Set<number>, 
+    extraLines?: DxfEntity[]
+): DxfEntity[] => {
+    return findParallelPolygons(lines, tolerance, resultLayer, obstacles, axisLines, textEntities, 'BEAM', validWidths);
+};
+
+export const findParallelPolygonsWall = (
+    lines: DxfEntity[], 
+    tolerance: number, 
+    resultLayer: string, 
+    obstacles: DxfEntity[], 
+    axisLines: DxfEntity[], 
+    textEntities: DxfEntity[], 
+    validWidths: Set<number>
+): DxfEntity[] => {
+    return findParallelPolygons(lines, tolerance, resultLayer, obstacles, axisLines, textEntities, 'WALL', validWidths);
 };
