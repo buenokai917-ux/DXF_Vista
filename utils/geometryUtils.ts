@@ -46,10 +46,6 @@ export const distancePointToInfiniteLine = (p: Point, lStart: Point, lEnd: Point
   return numerator / denominator;
 };
 
-export const boundsOverlap = (a: Bounds, b: Bounds): boolean => {
-  return !(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
-};
-
 export const getEntityBounds = (entity: DxfEntity): Bounds | null => {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   const update = (p: Point) => {
@@ -189,7 +185,7 @@ export const transformPoint = (p: Point, scale: Point, rotationDeg: number, tran
   };
 };
 
-export const rayIntersectsBox = (start: Point, dir: Point, box: Bounds): number => {
+const rayIntersectsBox = (start: Point, dir: Point, box: Bounds): number => {
     let tmin = -Infinity;
     let tmax = Infinity;
 
@@ -222,7 +218,7 @@ export const rayIntersectsBox = (start: Point, dir: Point, box: Bounds): number 
     return tmin; 
 };
 
-export const getRayIntersection = (start: Point, dir: Point, obstacles: DxfEntity[]): number => {
+const getRayIntersection = (start: Point, dir: Point, obstacles: DxfEntity[]): number => {
     let bestDist = Infinity;
     
     const len = Math.sqrt(dir.x*dir.x + dir.y*dir.y);
@@ -366,6 +362,7 @@ const createPolygonFromPair = (
     const projL2Start = { x: l1.start.x + u.x * tB1, y: l1.start.y + u.y * tB1 };
     const vPerp = { x: l2.start.x - projL2Start.x, y: l2.start.y - projL2Start.y };
 
+    // UPDATED: Use Boolean Subtraction for BOTH Beams and Walls to handle obstacles (Columns) in the middle
     if (mode === 'BEAM' || mode === 'WALL') {
         const blockers: [number, number][] = [];
         
@@ -408,33 +405,23 @@ const createPolygonFromPair = (
         }
         
         const mergedBlockers = mergeIntervals(blockers);
+        // For Walls, we might want to use tMaxOverlap instead of tMaxUnion if we strictly follow the overlap
+        // But usually extending to union closes corners. Let's keep logic consistent.
+        // For walls, trim to union might be better for corners? 
+        // Actually, walls usually rely on the "Trim/Extend" logic for corners. 
+        // But the user requested splitting at columns.
+        // Let's use Union, but then clamp to Overlap if it's open space?
+        // Safe bet: Use Union, but subtract obstacles.
+        
         const validIntervals = subtractIntervals(tMinUnion, tMaxUnion, mergedBlockers);
         
         const results: DxfEntity[] = [];
         
         for (const interval of validIntervals) {
-            let startT = interval[0];
-            let endT = interval[1];
-
-            if (endT - startT < 200) continue; 
+            const startT = interval[0];
+            const endT = interval[1];
             
-            // For beams: allow extension at both ends until wall/column or a small buffer (gap*1.05)
-            if (mode === 'BEAM') {
-                const extendLen = gap * 1.05;
-                const pStartProbe = { x: l1.start.x + u.x * startT, y: l1.start.y + u.y * startT };
-                const pEndProbe = { x: l1.start.x + u.x * endT, y: l1.start.y + u.y * endT };
-
-                const backDir = { x: -u.x, y: -u.y };
-                const fwdDir = { x: u.x, y: u.y };
-                const distBack = getRayIntersection(pStartProbe, backDir, obstacles);
-                const distFwd = getRayIntersection(pEndProbe, fwdDir, obstacles);
-
-                const backAdd = Math.min(extendLen, distBack === Infinity ? extendLen : Math.max(distBack - 5, 0));
-                const fwdAdd = Math.min(extendLen, distFwd === Infinity ? extendLen : Math.max(distFwd - 5, 0));
-
-                startT -= backAdd;
-                endT += fwdAdd;
-            }
+            if (endT - startT < 200) continue; 
             
             const pStartBase = { x: l1.start.x + u.x * startT, y: l1.start.y + u.y * startT };
             const pEndBase = { x: l1.start.x + u.x * endT, y: l1.start.y + u.y * endT };
@@ -559,33 +546,6 @@ export const findParallelPolygons = (
   }
   return polygons;
 };
-
-export const findParallelPolygonsBeam = (
-    lines: DxfEntity[],
-    tolerance = 1200,
-    resultLayer = 'BEAM_CALC',
-    obstacles: DxfEntity[] = [],
-    axisLines: DxfEntity[] = [],
-    textEntities: DxfEntity[] = [],
-    validWidths: Set<number> = new Set(),
-    beamLines: DxfEntity[] = []
-): DxfEntity[] => {
-    const base = findParallelPolygons(lines, tolerance, resultLayer, obstacles, axisLines, textEntities, 'BEAM', validWidths);
-    // If external beamLines provided, reuse them; otherwise fall back to input lines.
-    const sourceLines = beamLines.length > 0 ? beamLines : lines;
-    // Attach source lines for optional post-processing; caller may extend polygons based on beamLines.
-    return base.map(p => ({ ...p, _beamSourceLines: sourceLines } as any));
-};
-
-export const findParallelPolygonsWall = (
-    lines: DxfEntity[],
-    tolerance = 600,
-    resultLayer = 'WALL_CALC',
-    obstacles: DxfEntity[] = [],
-    axisLines: DxfEntity[] = [],
-    textEntities: DxfEntity[] = [],
-    validWidths: Set<number> = new Set()
-): DxfEntity[] => findParallelPolygons(lines, tolerance, resultLayer, obstacles, axisLines, textEntities, 'WALL', validWidths);
 
 export const calculateTotalBounds = (
     entities: DxfEntity[], 
