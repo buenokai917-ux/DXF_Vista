@@ -1,16 +1,14 @@
 import React from 'react';
 import { DxfEntity, EntityType, Point, Bounds, ProjectFile } from '../types';
 import { extractEntities } from '../utils/dxfHelpers';
-import { updateProject, getMergeBaseBounds, findEntitiesInAllProjects } from './structure-common';
+import { updateProject, getMergeBaseBounds, findEntitiesInAllProjects, isEntityInBounds, filterEntitiesInBounds } from './structure-common';
 import { 
     getBeamProperties, 
     getCenter, 
     findParallelPolygonsBeam, 
     getEntityBounds, 
     distance, 
-    boundsOverlap, 
-    isEntityInBounds,
-    filterEntitiesInBounds
+    boundsOverlap
 } from '../utils/geometryUtils';
 
 // --- TYPES & CONSTANTS ---
@@ -452,6 +450,37 @@ const extendTJunctions = (
     });
 };
 
+const createSubPoly = (
+    center: Point, 
+    u: Point, 
+    v: Point, 
+    width: number, 
+    tStart: number, 
+    tEnd: number, 
+    layer: string
+): DxfEntity => {
+    const hw = width / 2;
+    
+    // Calculate base points on the centerline
+    const b1 = { x: center.x + u.x * tStart, y: center.y + u.y * tStart };
+    const b2 = { x: center.x + u.x * tEnd, y: center.y + u.y * tEnd };
+    
+    // Calculate corners
+    // p1: start-left, p2: end-left, p3: end-right, p4: start-right
+    // Note: 'v' is lateral vector
+    const p1 = { x: b1.x + v.x * hw, y: b1.y + v.y * hw };
+    const p2 = { x: b2.x + v.x * hw, y: b2.y + v.y * hw };
+    const p3 = { x: b2.x - v.x * hw, y: b2.y - v.y * hw };
+    const p4 = { x: b1.x - v.x * hw, y: b1.y - v.y * hw };
+
+    return {
+        type: EntityType.LWPOLYLINE,
+        layer,
+        closed: true,
+        vertices: [p1, p2, p3, p4]
+    };
+};
+
 const cutPolygonsByObstacles = (
     polys: DxfEntity[],
     obstacles: DxfEntity[]
@@ -563,21 +592,6 @@ const cutPolygonsByObstacles = (
     });
 
     return results;
-};
-
-const createSubPoly = (center: Point, u: Point, v: Point, width: number, tStart: number, tEnd: number, layer: string): DxfEntity => {
-    const hw = width/2;
-    const c1 = { x: center.x + u.x*tStart - v.x*hw, y: center.y + u.y*tStart - v.y*hw };
-    const c2 = { x: center.x + u.x*tEnd - v.x*hw, y: center.y + u.y*tEnd - v.y*hw };
-    const c3 = { x: center.x + u.x*tEnd + v.x*hw, y: center.y + u.y*tEnd + v.y*hw };
-    const c4 = { x: center.x + u.x*tStart + v.x*hw, y: center.y + u.y*tStart + v.y*hw };
-    
-    return {
-        type: EntityType.LWPOLYLINE,
-        layer,
-        closed: true,
-        vertices: [c1, c2, c3, c4]
-    };
 };
 
 // --- PIPELINE STEPS ---
