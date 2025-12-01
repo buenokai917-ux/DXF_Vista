@@ -26,7 +26,8 @@ export const updateProject = (
     color: string, 
     contextLayers: string[], 
     fillLayer: boolean,
-    splitRegionsUpdate?: ViewportRegion[]
+    splitRegionsUpdate?: ViewportRegion[],
+    layersToHide: string[] = []
 ) => {
     const updatedData = {
         ...activeProject.data,
@@ -43,6 +44,9 @@ export const updateProject = (
             contextLayers.forEach(l => {
                 if (updatedData.layers.includes(l)) newActive.add(l);
             });
+            
+            // Hide requested layers (e.g. previous pipeline steps)
+            layersToHide.forEach(l => newActive.delete(l));
             
             const newFilled = new Set(p.filledLayers);
             if (fillLayer) {

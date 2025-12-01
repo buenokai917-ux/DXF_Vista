@@ -230,32 +230,21 @@ const collectBeamSources = (
     }
     
     const hasMergeLabel = activeProject.data.layers.includes('MERGE_LABEL');
-    const hasWalls = activeProject.data.layers.includes('WALL_CALC');
-    const hasCols = activeProject.data.layers.includes('COLU_CALC');
     
-    if (!hasMergeLabel || !hasWalls || !hasCols) {
-        console.warn('Beam pipeline requires Merge Views plus Columns and Walls for best results.');
+    if (!hasMergeLabel) {
+        console.warn('Beam pipeline requires Merge Views for best results.');
     }
 
     const baseBounds = getMergeBaseBounds(activeProject, 2500);
     
-    // 1. Find Annotation Layers based on user logic: "标注+梁", "Z+梁", "English+Beam"
+    // 1. Find Annotation Layers
     const beamTextLayers = activeProject.data.layers.filter(l => {
         const u = l.toUpperCase();
-        // Ignore calculated layers
         if (u.endsWith('_CALC')) return false;
-        
-        // Match specific patterns
-        // "Z" followed by anything then "梁" (e.g., Z_梁标注)
         if (/^Z.*梁/i.test(u)) return true;
-        // "标注" and "梁" in name
         if (u.includes('标注') && u.includes('梁')) return true;
-        // English variants
         if (u.includes('DIM') && u.includes('BEAM')) return true;
-        
-        // Also include MERGE_LABEL as a fallback if present
         if (u === 'MERGE_LABEL') return true;
-        
         return false;
     });
 
@@ -264,22 +253,47 @@ const collectBeamSources = (
     let rawEntities = extractEntities(beamLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
     let rawAxisEntities = extractEntities(['AXIS'], activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints).filter(e => e.type === EntityType.LINE);
     let rawTextEntities = extractEntities(beamTextLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
-        .filter(e => e.type === EntityType.TEXT && !e.layer.toUpperCase().startsWith('Z_')); // Exclude Zone titles if any
+        .filter(e => e.type === EntityType.TEXT && !e.layer.toUpperCase().startsWith('Z_')); 
 
     const entities = filterEntitiesInBounds(rawEntities, baseBounds);
     const axisEntities = filterEntitiesInBounds(rawAxisEntities, baseBounds);
     const textEntities = filterEntitiesInBounds(rawTextEntities, baseBounds);
 
-    let obstacles = extractEntities(['WALL_CALC', 'COLU_CALC'], activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
-    if (obstacles.length === 0) {
-        obstacles = extractEntities(['WALL', 'COLU', 'COLUMN'], activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
-    }
-    obstacles = filterEntitiesInBounds(obstacles, baseBounds);
+    // FIXED OBSTACLE COLLECTION: Strictly prefer CALC layers if present
     
-    if (obstacles.length < 10) {
-         const globalObstacles = findEntitiesInAllProjects(projects, /wall|colu|column/i);
-         obstacles = globalObstacles;
+    // 1. Walls
+    let walls: DxfEntity[] = [];
+    const wallCalcLayer = activeProject.data.layers.find(l => l === 'WALL_CALC');
+    if (wallCalcLayer) {
+        walls = extractEntities([wallCalcLayer], activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
+    } 
+    // Only fallback if CALC layer is strictly empty or missing
+    if (walls.length === 0) {
+        const rawWallLayers = activeProject.data.layers.filter(l => /wall|墙/i.test(l) && !l.endsWith('_CALC'));
+        walls = extractEntities(rawWallLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
     }
+    walls = filterEntitiesInBounds(walls, baseBounds);
+
+    // 2. Columns
+    let cols: DxfEntity[] = [];
+    const colCalcLayer = activeProject.data.layers.find(l => l === 'COLU_CALC');
+    if (colCalcLayer) {
+        cols = extractEntities([colCalcLayer], activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
+    }
+    // Only fallback if CALC layer is strictly empty or missing
+    if (cols.length === 0) {
+        const rawColLayers = activeProject.data.layers.filter(l => /colu|column|柱/i.test(l) && !l.endsWith('_CALC'));
+        cols = extractEntities(rawColLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
+    }
+    cols = filterEntitiesInBounds(cols, baseBounds);
+
+    // Last resort fallback
+    if (cols.length < 5) {
+         const globalCols = findEntitiesInAllProjects(projects, /colu|column|柱/i);
+         if (cols.length === 0) cols = globalCols; 
+    }
+
+    const obstacles = [...walls, ...cols];
 
     const axisLines = [...axisEntities];
     if (axisLines.length === 0) {
@@ -290,21 +304,18 @@ const collectBeamSources = (
     }
     
     // 2. Extract Valid Widths from Text
-    // Logic: Look for "BeamName Space WidthxHeight" e.g. "KL1 300x500"
     const textPool = [...textEntities];
     const validWidths = new Set<number>();
     
     textPool.forEach(t => {
         if (!t.text) return;
-        // Match: Any characters, then Space(s), then Digits, then 'x' or 'X' or '×', then Digits
         const matches = t.text.match(/^.+\s+(\d+)[xX×]\d+/);
         if (matches) {
             const w = parseInt(matches[1], 10);
-            if (!isNaN(w) && w >= 100 && w <= 2000) { // Reasonable beam width sanity check
+            if (!isNaN(w) && w >= 100 && w <= 2000) { 
                 validWidths.add(w);
             }
         } else {
-             // Fallback: Just "WidthxHeight" (e.g. 240x500) without name, if it's on a beam annotation layer
              const simpleMatch = t.text.match(/^(\d+)[xX×]\d+$/);
              if (simpleMatch) {
                 const w = parseInt(simpleMatch[1], 10);
@@ -368,7 +379,6 @@ const computeOBB = (poly: DxfEntity): OBB | null => {
     const p1 = poly.vertices[1];
     const p3 = poly.vertices[3];
 
-    // Safe check for undefined points
     if (!p0 || !p1 || !p3) return null;
     
     const v01 = { x: p1.x - p0.x, y: p1.y - p0.y };
@@ -378,15 +388,14 @@ const computeOBB = (poly: DxfEntity): OBB | null => {
     
     let u: Point, v: Point, len: number, width: number;
     
-    // Assume longer dimension is axis
     if (len01 > len03) {
-        if (len01 === 0) return null; // Protect against division by zero
+        if (len01 === 0) return null; 
         u = { x: v01.x/len01, y: v01.y/len01 };
         v = { x: v03.x/len03, y: v03.y/len03 };
         len = len01;
         width = len03;
     } else {
-        if (len03 === 0) return null; // Protect against division by zero
+        if (len03 === 0) return null; 
         u = { x: v03.x/len03, y: v03.y/len03 };
         v = { x: v01.x/len01, y: v01.y/len01 };
         len = len03;
@@ -458,7 +467,6 @@ const rayIntersectsOBB = (origin: Point, dir: Point, target: OBB): number => {
     const dV = dir.x * target.v.x + dir.y * target.v.y;
     
     // Now we have ray: Origin(pU, pV), Dir(dU, dV)
-    // Target Box: U in [minT, maxT], V in [-halfWidth, +halfWidth]
     
     let tMin = -Infinity, tMax = Infinity;
 
@@ -586,7 +594,6 @@ const mergeAlignedPolygons = (polys: DxfEntity[]): DxfEntity[] => {
 
                 // 3. Overlap/Touch Check (Longitudinal)
                 // Project intervals onto U
-                // Note: center difference projected onto U + other's relative extent
                 const du = (other.center.x - current.center.x)*current.u.x + (other.center.y - current.center.y)*current.u.y;
                 const minOth = du + other.minT;
                 const maxOth = du + other.maxT;
@@ -631,137 +638,6 @@ const mergeAlignedPolygons = (polys: DxfEntity[]): DxfEntity[] => {
     }
 
     return mergedItems.map(m => m.poly);
-};
-
-const performSmartBeamExtension = (
-    polys: DxfEntity[],
-    obstacles: DxfEntity[]
-): DxfEntity[] => {
-    const obbs = polys.map(computeOBB).filter((o): o is OBB => o !== null);
-    const MAX_EXTEND_DIST = 1500;
-
-    return obbs.map(curr => {
-        
-        // Check both ends: MinT (Start) and MaxT (End)
-        // Directions: Min -> -U, Max -> +U
-        const checkEnd = (isMax: boolean) => {
-            const dir = isMax ? curr.u : { x: -curr.u.x, y: -curr.u.y };
-            const startT = isMax ? curr.maxT : curr.minT;
-            
-            // To be robust against face-aligned beams (where center misses),
-            // we cast 3 rays: Center, Left (-90% width), Right (+90% width)
-            const baseOrigin = { 
-                x: curr.center.x + curr.u.x * startT, 
-                y: curr.center.y + curr.u.y * startT 
-            };
-            
-            // Offset logic: move along V
-            // We use 90% of halfWidth to stay safely inside the face
-            const offsetMag = curr.halfWidth * 0.9;
-            const offsets = [0, offsetMag, -offsetMag];
-            
-            let minBeamDist = Infinity;
-            let minWallDist = Infinity;
-
-            for (const off of offsets) {
-                const origin = {
-                    x: baseOrigin.x + curr.v.x * off,
-                    y: baseOrigin.y + curr.v.y * off
-                };
-
-                let closestWall = Infinity;
-                let closestBeam = Infinity;
-
-                // 1. Check Obstacles (Walls/Columns)
-                for (const obs of obstacles) {
-                    const b = getEntityBounds(obs);
-                    if (!b) continue;
-                    
-                    const res = rayIntersectsAABB(origin, dir, b);
-                    if (res.tmax < res.tmin) continue; // Miss
-                    if (res.tmax < 0) continue; // Behind
-
-                    // Handle "Inside" vs "Ahead"
-                    // If tmin < 0, we are inside.
-                    
-                    const isColumn = /colu|柱/i.test(obs.layer);
-                    
-                    if (res.tmin < -1e-1) {
-                         // We are inside.
-                         if (isColumn) {
-                             // Inside a column -> Assume hard anchor, stop immediately (dist 0).
-                             closestWall = 0;
-                         } else {
-                             // Inside a wall -> Ignore it to allow beam to exit wall and find connection.
-                             // Pass through.
-                         }
-                    } else {
-                         // Ahead (or touching face tmin=0)
-                         if (res.tmin < closestWall) {
-                             closestWall = res.tmin;
-                         }
-                    }
-                }
-
-                // 2. Check Other Beams
-                for (const target of obbs) {
-                    if (target === curr) continue;
-                    // Angle Check: Must be perpendicular
-                    const dot = Math.abs(curr.u.x * target.u.x + curr.u.y * target.u.y);
-                    if (dot > 0.15) continue; 
-
-                    const dist = rayIntersectsOBB(origin, dir, target);
-                    if (dist >= 0 && dist < closestBeam) {
-                        closestBeam = dist;
-                    }
-                }
-                
-                // Track global minimums for this end
-                if (closestWall < Infinity) minWallDist = Math.min(minWallDist, closestWall);
-                if (closestBeam < Infinity) minBeamDist = Math.min(minBeamDist, closestBeam);
-            }
-
-            // Decision Logic
-            // If we found a beam within range...
-            if (minBeamDist < MAX_EXTEND_DIST) {
-                // ...and it's not blocked by a wall closer than it
-                // Note: minWallDist is valid positive distance to NEXT obstacle face.
-                const limit = Math.min(minWallDist, minBeamDist);
-                return limit;
-            }
-            
-            return 0;
-        };
-
-        const extMin = checkEnd(false); // -U direction
-        const extMax = checkEnd(true);  // +U direction
-
-        if (extMin === 0 && extMax === 0) return curr.entity;
-
-        // Reconstruct Poly
-        const hw = curr.halfWidth;
-        const newMinT = curr.minT - extMin;
-        const newMaxT = curr.maxT + extMax;
-
-        const c = curr.center;
-        const u = curr.u;
-        const v = curr.v;
-        
-        const makeP = (t: number, vMult: number) => ({
-            x: c.x + u.x * t + v.x * (vMult * hw),
-            y: c.y + u.y * t + v.y * (vMult * hw)
-        });
-
-        return {
-            ...curr.entity,
-            vertices: [
-                makeP(newMinT, -1),
-                makeP(newMaxT, -1),
-                makeP(newMaxT, 1),
-                makeP(newMinT, 1)
-            ]
-        };
-    });
 };
 
 const createSubPoly = (
@@ -879,20 +755,9 @@ const cutPolygonsByObstacles = (
             const overlapVStart = Math.max(-width/2, oMinV);
             const overlapVEnd = Math.min(width/2, oMaxV);
 
-            // Obstacle must overlap significant width to cut
-            if (overlapVEnd - overlapVStart > width * 0.3) {
-                 const obsLen = oMaxT - oMinT;
-                 const isColumn = /colu|column|柱/i.test(obs.layer);
-                 
-                 // Smart Cut:
-                 // 1. Columns always cut.
-                 // 2. Walls: Only cut if they look like perpendicular crossings (short intersection length).
-                 //    If it's a long intersection, it's likely a beam inside a parallel wall -> PRESERVE IT.
-                 if (!isColumn && obsLen > Math.max(width * 2, 800)) {
-                     // Parallel wall detected, ignore this blocker
-                     return; 
-                 }
-
+            // STRICTER CHECK: Overlap > 2% width or > 5mm (Very strict to prevent any overlap)
+            const overlapV = overlapVEnd - overlapVStart;
+            if (overlapV > Math.min(width * 0.02, 5)) {
                  blockers.push([oMinT, oMaxT]);
             }
         });
@@ -914,6 +779,7 @@ const cutPolygonsByObstacles = (
 
         let currentT = minT;
         mergedBlockers.forEach(blk => {
+            // Only create segment if gap is substantial (e.g. > 10mm)
             if (blk[0] > currentT + 10) { 
                 const segEnd = Math.min(blk[0], maxT);
                 if (segEnd > currentT) {
@@ -929,6 +795,90 @@ const cutPolygonsByObstacles = (
     });
 
     return results;
+};
+
+// --- EXTENSION LOGIC ---
+
+const castRayForExtension = (
+    origin: Point, 
+    dir: Point, 
+    obstacles: { ent: DxfEntity, bounds: Bounds }[], 
+    maxDist: number
+): number | null => {
+    let closest = Infinity;
+    
+    obstacles.forEach(obs => {
+        const { tmin, tmax } = rayIntersectsAABB(origin, dir, obs.bounds);
+        if (tmax < tmin) return; // No intersection
+        if (tmin > maxDist) return; // Too far
+        if (tmax < 0) return; // Behind
+
+        // We want the first entry point
+        const dist = tmin < 0 ? 0 : tmin; // If inside, dist is 0 (or treat as touching)
+        
+        // Heuristic: If we are already inside, we don't need to extend.
+        // But if we are close (dist > 0 && dist < maxDist), we extend.
+        if (dist < closest) {
+            closest = dist;
+        }
+    });
+
+    return closest !== Infinity ? closest : null;
+};
+
+const performSmartBeamExtension = (
+    polys: DxfEntity[],
+    obstacles: DxfEntity[]
+): DxfEntity[] => {
+    // Pre-compute obstacle bounds
+    const obstacleBounds = obstacles
+        .map(o => ({ ent: o, bounds: getEntityBounds(o) }))
+        .filter(o => o.bounds !== null) as { ent: DxfEntity, bounds: Bounds }[];
+
+    return polys.map(poly => {
+        const obb = computeOBB(poly);
+        if (!obb) return poly;
+
+        // Use obb.u as direction. obb.minT is 'start' (negative), obb.maxT is 'end' (positive).
+        const { center, u, v, halfWidth, minT, maxT } = obb;
+        
+        // Current End Points
+        const startPt = { x: center.x + u.x * minT, y: center.y + u.y * minT };
+        const endPt = { x: center.x + u.x * maxT, y: center.y + u.y * maxT };
+        
+        // Ray 1: From endPt in direction u
+        const ext1 = castRayForExtension(endPt, u, obstacleBounds, 600);
+        
+        // Ray 2: From startPt in direction -u
+        const ext2 = castRayForExtension(startPt, { x: -u.x, y: -u.y }, obstacleBounds, 600);
+
+        let newMaxT = maxT;
+        let newMinT = minT;
+
+        if (ext1 !== null) newMaxT += ext1;
+        if (ext2 !== null) newMinT -= ext2;
+
+        if (newMaxT === maxT && newMinT === minT) return poly;
+
+        // Reconstruct
+        const hw = halfWidth;
+        
+        // p1/p2 at newMaxT (end)
+        // p3/p4 at newMinT (start)
+        
+        // Vertices for polygon
+        const p_end_left = { x: center.x + u.x*newMaxT + v.x*hw, y: center.y + u.y*newMaxT + v.y*hw };
+        const p_end_right = { x: center.x + u.x*newMaxT - v.x*hw, y: center.y + u.y*newMaxT - v.y*hw };
+        const p_start_right = { x: center.x + u.x*newMinT - v.x*hw, y: center.y + u.y*newMinT - v.y*hw };
+        const p_start_left = { x: center.x + u.x*newMinT + v.x*hw, y: center.y + u.y*newMinT + v.y*hw };
+        
+        return {
+            type: EntityType.LWPOLYLINE,
+            layer: poly.layer,
+            closed: true,
+            vertices: [p_start_left, p_end_left, p_end_right, p_start_right]
+        };
+    });
 };
 
 // --- PIPELINE STEPS ---
@@ -981,7 +931,9 @@ export const runBeamRawGeneration = (
         polys, 
         DEFAULT_BEAM_STAGE_COLORS[resultLayer],
         contextLayers, 
-        true
+        true,
+        undefined,
+        [] // No previous beam layer to hide
     );
     console.log(`Step 1: Found ${polys.length} raw beam candidates.`);
 };
@@ -1027,7 +979,9 @@ export const runBeamIntersectionProcessing = (
         segments, 
         DEFAULT_BEAM_STAGE_COLORS[resultLayer],
         contextLayers, 
-        true
+        true,
+        undefined,
+        ['BEAM_STEP1_RAW'] // Hide Step 1
     );
     console.log(`Step 2: Processed geometry into ${segments.length} valid segments.`);
 }
@@ -1079,7 +1033,9 @@ export const runBeamAttributeMounting = (
         newEntities,
         DEFAULT_BEAM_STAGE_COLORS[resultLayer],
         contextLayers,
-        true
+        true,
+        undefined,
+        ['BEAM_STEP2_GEO'] // Hide Step 2
     );
     console.log(`Step 3: Attributes attached to ${enriched.length} segments.`);
 };
@@ -1154,7 +1110,9 @@ export const runBeamTopologyMerge = (
         mergedEntities,
         DEFAULT_BEAM_STAGE_COLORS[resultLayer],
         contextLayers,
-        true
+        true,
+        undefined,
+        ['BEAM_STEP3_ATTR'] // Hide Step 3
     );
     console.log(`Step 4: Merged into ${groups.size} logical beams.`);
 };
@@ -1267,7 +1225,9 @@ export const runBeamPropagation = (
         propagatedEntities,
         DEFAULT_BEAM_STAGE_COLORS[resultLayer],
         contextLayers,
-        true
+        true,
+        undefined,
+        ['BEAM_STEP4_LOGIC'] // Hide Step 4
     );
     console.log(`Step 5: Finished. Total Labeled: ${metas.filter(m => m.label).length}/${metas.length}.`);
 };
