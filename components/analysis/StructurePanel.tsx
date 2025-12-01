@@ -2,9 +2,9 @@ import React from 'react';
 import { ProjectFile } from '../../types';
 import { runCalculateSplitRegions, runMergeViews } from '../../domains/structure-views';
 import { runCalculateColumns, runCalculateWalls } from '../../domains/structure-verticals';
-import { runBeamHardSplit, runBeamAttributeMounting, runBeamTopologyMerge, runBeamPropagation } from '../../domains/structure-beams';
+import { runBeamRawGeneration, runBeamIntersectionProcessing, runBeamAttributeMounting, runBeamTopologyMerge, runBeamPropagation } from '../../domains/structure-beams';
 import { Button } from '../Button';
-import { Grid, Merge, Box, ArrowRightLeft, AlignJustify, Tag, GitMerge, Radio } from 'lucide-react';
+import { Grid, Merge, Box, ArrowRightLeft, AlignJustify, Tag, GitMerge, Radio, Spline } from 'lucide-react';
 
 interface StructurePanelProps {
     activeProject: ProjectFile | null;
@@ -87,40 +87,49 @@ export const StructurePanel: React.FC<StructurePanelProps> = ({
                 </h3>
                 <div className="flex flex-col gap-2">
                     <Button 
-                        onClick={() => activeProject && runBeamHardSplit(activeProject, projects, setProjects, setLayerColors)}
+                        onClick={() => activeProject && runBeamRawGeneration(activeProject, projects, setProjects, setLayerColors)}
                         disabled={!activeProject || isLoading} 
                         variant="secondary" 
                         className="w-full text-xs py-1.5 justify-start pl-3"
-                        icon={<ArrowRightLeft size={12} className="text-green-500"/>}
+                        icon={<Spline size={12} className="text-green-500"/>}
                     >
-                        Step 1: Hard Split (Geometry)
+                        Step 1: Raw Generation
+                    </Button>
+                    <Button 
+                        onClick={() => activeProject && runBeamIntersectionProcessing(activeProject, projects, setProjects, setLayerColors)}
+                        disabled={!activeProject || isLoading} 
+                        variant="secondary" 
+                        className="w-full text-xs py-1.5 justify-start pl-3"
+                        icon={<ArrowRightLeft size={12} className="text-cyan-500"/>}
+                    >
+                        Step 2: Intersection Processing
                     </Button>
                     <Button 
                         onClick={() => activeProject && runBeamAttributeMounting(activeProject, projects, setProjects, setLayerColors)}
                         disabled={!activeProject || isLoading} 
                         variant="secondary" 
                         className="w-full text-xs py-1.5 justify-start pl-3"
-                        icon={<Tag size={12} className="text-teal-500"/>}
+                        icon={<Tag size={12} className="text-amber-500"/>}
                     >
-                        Step 2: Mount Attributes
+                        Step 3: Mount Attributes
                     </Button>
                     <Button 
                         onClick={() => activeProject && runBeamTopologyMerge(activeProject, projects, setProjects, setLayerColors)}
                         disabled={!activeProject || isLoading} 
                         variant="secondary" 
                         className="w-full text-xs py-1.5 justify-start pl-3"
-                        icon={<GitMerge size={12} className="text-amber-500"/>}
+                        icon={<GitMerge size={12} className="text-violet-500"/>}
                     >
-                        Step 3: Topology Merge
+                        Step 4: Topology Merge
                     </Button>
                     <Button 
                         onClick={() => activeProject && runBeamPropagation(activeProject, projects, setProjects, setLayerColors)}
                         disabled={!activeProject || isLoading} 
                         variant="secondary" 
                         className="w-full text-xs py-1.5 justify-start pl-3"
-                        icon={<Radio size={12} className="text-indigo-500"/>}
+                        icon={<Radio size={12} className="text-pink-500"/>}
                     >
-                        Step 4: Propagation
+                        Step 5: Propagation
                     </Button>
                 </div>
             </div>

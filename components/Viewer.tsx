@@ -168,7 +168,7 @@ export const Viewer: React.FC<ViewerProps> = ({
         const now = Date.now();
         if (now - lastHitTestTime.current > 50) { // Check every 50ms
             const tolerance = 10 / transform.k; // 10 screen pixels tolerance
-            const layers = findLayersAtPoint({x: worldX, y: worldY}, data.entities, data.blocks, activeLayers, tolerance);
+            const layers = findLayersAtPoint({x: worldX, y: worldY}, data.entities, data.blocks, data.blockBasePoints, activeLayers, tolerance);
             setHoveredLayers(layers);
             lastHitTestTime.current = now;
         }

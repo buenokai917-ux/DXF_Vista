@@ -1,7 +1,7 @@
 import React from 'react';
 import { DxfEntity, ProjectFile, ViewportRegion, Bounds, Point, EntityType } from '../types';
 import { extractEntities } from '../utils/dxfHelpers';
-import { getEntityBounds } from '../utils/geometryUtils';
+import { getEntityBounds, boundsOverlap } from '../utils/geometryUtils';
 
 export const findEntitiesInAllProjects = (
     projects: ProjectFile[], 
@@ -72,10 +72,6 @@ export const isPointInBounds = (p: Point, b: Bounds) => {
     return p.x >= b.minX && p.x <= b.maxX && p.y >= b.minY && p.y <= b.maxY;
 };
 
-export const boundsOverlap = (a: Bounds, b: Bounds): boolean => {
-    return !(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
-};
-
 export const isEntityInBounds = (ent: DxfEntity, boundsList: Bounds[]): boolean => {
     return boundsList.some(b => {
          if (ent.start && isPointInBounds(ent.start, b)) return true;
@@ -107,3 +103,5 @@ export const getMergeBaseBounds = (project: ProjectFile, margin: number = 0): Bo
         .filter(r => !r.info || r.info.index === 1)
         .map(r => margin > 0 ? expandBounds(r.bounds, margin) : r.bounds);
 };
+
+export { boundsOverlap };

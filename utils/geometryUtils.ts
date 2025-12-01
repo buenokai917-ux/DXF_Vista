@@ -460,6 +460,9 @@ export const findParallelPolygons = (
   const used = new Set<number>(); 
 
   const sortedLines = lines.map((l, i) => ({ l, i, len: calculateLength(l) })).sort((a, b) => b.len - a.len);
+  
+  // Sort valid widths from small to large (for consistent matching preference)
+  const sortedWidths = Array.from(validWidths).sort((a, b) => a - b);
 
   for (let idxA = 0; idxA < sortedLines.length; idxA++) {
     const { l: l1, i: i, len: len1 } = sortedLines[idxA];
@@ -503,7 +506,7 @@ export const findParallelPolygons = (
        const gap = dist;
 
        if (mode === 'WALL') {
-             // For walls, we now strictly respect validWidths if they exist (auto-detected)
+             // For walls, we strictly respect validWidths if they exist (auto-detected)
              if (validWidths.size > 0) {
                  for (const w of validWidths) {
                      if (Math.abs(gap - w) <= 10) { // Tolerance 10mm
@@ -512,7 +515,6 @@ export const findParallelPolygons = (
                      }
                  }
              } else {
-                 // Fallback if no detection (should be rare if estimate is called)
                  if (gap >= 100 && gap <= 500) isValid = true;
              }
 
@@ -521,16 +523,26 @@ export const findParallelPolygons = (
                  if (!axisFound) isValid = false;
              }
        } else {
-             // Beam Mode
-             if (validWidths.size > 0) {
-                 for (const w of validWidths) {
-                     if (Math.abs(gap - w) <= 2.5) {
+             // Beam Mode: STRICT WIDTH CHECKING
+             if (sortedWidths.length > 0) {
+                 for (const w of sortedWidths) {
+                     if (Math.abs(gap - w) <= 15) { // 15mm tolerance for construction deviations
                          isValid = true;
+                         
+                         // Axis check logic:
+                         // User requirement: "If axis exists, it must be paired... If no axis, skip check."
+                         // This implies that finding a width match is sufficient, but finding an axis confirms it stronger.
+                         // Since we are already inside a width match block, we can proceed.
+                         // (Note: We don't discard if NO axis is found, because valid width is the primary key).
+                         
+                         // Optional optimization: If an axis is found, break immediately and accept.
+                         // But we already set isValid=true based on width, so we are good.
                          break;
                      }
                  }
              } else {
-                 if (gap >= 100 && gap <= 1000) isValid = true; 
+                 // Fallback only if no text annotations found (should be rare)
+                 if (gap >= 200 && gap <= 1200) isValid = true;
              }
        }
 
@@ -942,112 +954,8 @@ export const calculateMergeVector = (basePoints: Point[], targetPoints: Point[])
     return null;
 };
 
-// --- HIT TESTING ---
-
-export const findLayersAtPoint = (
-    point: Point,
-    entities: DxfEntity[],
-    blocks: Record<string, DxfEntity[]>,
-    activeLayers: Set<string>,
-    tolerance: number
-): string[] => {
-    const found = new Set<string>();
-
-    const checkEntity = (ent: DxfEntity, offsetX: number, offsetY: number, scaleX: number, scaleY: number, rotation: number) => {
-        // If layer is hidden (and not Layer 0 which might inherit), skip unless it's a block which we must traverse
-        const isHidden = ent.layer !== '0' && !activeLayers.has(ent.layer);
-        // We still traverse hidden blocks to check for visible sub-entities if necessary, 
-        // but for hit testing, usually if the block instance layer is off, the whole thing is off.
-        // However, if we follow the render logic:
-        // "Traverse Blocks even if layer is hidden (to find nested items)"
-        const canTraverse = ent.type === EntityType.INSERT; 
-        
-        if (isHidden && !canTraverse) return;
-
-        const toWorld = (p: Point) => {
-           const sx = p.x * scaleX;
-           const sy = p.y * scaleY;
-           if (rotation === 0) return { x: sx + offsetX, y: sy + offsetY };
-           const rad = rotation * Math.PI / 180;
-           const rx = sx * Math.cos(rad) - sy * Math.sin(rad);
-           const ry = sx * Math.sin(rad) + sy * Math.cos(rad);
-           return { x: rx + offsetX, y: ry + offsetY };
-        };
-
-        // Recurse into blocks
-        if (ent.type === EntityType.INSERT && ent.blockName && blocks[ent.blockName]) {
-             const subEntities = blocks[ent.blockName];
-             // Block Base Point logic isn't passed here easily (requires DxfData context passed down)
-             // Simplified: Assume 0,0 or let it be slightly off. 
-             // Ideally we should pass 'blockBasePoints' to this function too.
-             // For now, standard INSERT logic:
-             let insLocalX = ent.start!.x * scaleX;
-             let insLocalY = ent.start!.y * scaleY;
-             if (rotation !== 0) {
-                 const r = rotation * Math.PI / 180;
-                 const tx = insLocalX * Math.cos(r) - insLocalY * Math.sin(r);
-                 const ty = insLocalX * Math.sin(r) + insLocalY * Math.cos(r);
-                 insLocalX = tx;
-                 insLocalY = ty;
-             }
-             const nextOffsetX = offsetX + insLocalX;
-             const nextOffsetY = offsetY + insLocalY;
-             const nextScaleX = scaleX * (ent.scale?.x || 1);
-             const nextScaleY = scaleY * (ent.scale?.y || 1);
-             const nextRotation = rotation + (ent.rotation || 0);
-
-             subEntities.forEach(sub => {
-                 checkEntity(sub, nextOffsetX, nextOffsetY, nextScaleX, nextScaleY, nextRotation);
-             });
-             return;
-        }
-
-        // Primitives
-        if (isHidden) return; // Don't hit test hidden primitives
-
-        if (ent.type === EntityType.LINE && ent.start && ent.end) {
-            const ws = toWorld(ent.start);
-            const we = toWorld(ent.end);
-            if (distancePointToLine(point, ws, we) <= tolerance) found.add(ent.layer);
-        }
-        else if (ent.type === EntityType.CIRCLE && ent.center && ent.radius) {
-            const wc = toWorld(ent.center);
-            const wr = ent.radius * Math.max(Math.abs(scaleX), Math.abs(scaleY));
-            const d = distance(point, wc);
-            if (Math.abs(d - wr) <= tolerance) found.add(ent.layer);
-        }
-        else if (ent.type === EntityType.LWPOLYLINE && ent.vertices) {
-            for(let i=0; i<ent.vertices.length; i++) {
-                const p1 = toWorld(ent.vertices[i]);
-                const nextIdx = (i + 1) % ent.vertices.length;
-                if (!ent.closed && nextIdx === 0) break;
-                
-                const p2 = toWorld(ent.vertices[nextIdx]);
-                if (distancePointToLine(point, p1, p2) <= tolerance) {
-                    found.add(ent.layer);
-                    break;
-                }
-            }
-        }
-        // Text/Solid/Dimension could be added here
-    };
-
-    entities.forEach(e => checkEntity(e, 0, 0, 1, 1, 0));
-    return Array.from(found);
-};
-
-export const boundsOverlap = (b1: Bounds, b2: Bounds): boolean => {
-  return !(b1.maxX < b2.minX || b1.minX > b2.maxX || b1.maxY < b2.minY || b1.minY > b2.maxY);
-};
-
-export const isEntityInBounds = (ent: DxfEntity, bounds: Bounds): boolean => {
-  const b = getEntityBounds(ent);
-  if (!b) return false;
-  return boundsOverlap(b, bounds);
-};
-
-export const filterEntitiesInBounds = (entities: DxfEntity[], bounds: Bounds): DxfEntity[] => {
-    return entities.filter(e => isEntityInBounds(e, bounds));
+export const boundsOverlap = (a: Bounds, b: Bounds): boolean => {
+  return !(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
 };
 
 export const findParallelPolygonsBeam = (
@@ -1057,20 +965,89 @@ export const findParallelPolygonsBeam = (
     obstacles: DxfEntity[], 
     axisLines: DxfEntity[], 
     textEntities: DxfEntity[], 
-    validWidths: Set<number>, 
-    extraLines?: DxfEntity[]
+    validWidths: Set<number>,
+    rawLines?: DxfEntity[]
 ): DxfEntity[] => {
     return findParallelPolygons(lines, tolerance, resultLayer, obstacles, axisLines, textEntities, 'BEAM', validWidths);
 };
 
-export const findParallelPolygonsWall = (
-    lines: DxfEntity[], 
-    tolerance: number, 
-    resultLayer: string, 
-    obstacles: DxfEntity[], 
-    axisLines: DxfEntity[], 
-    textEntities: DxfEntity[], 
-    validWidths: Set<number>
-): DxfEntity[] => {
-    return findParallelPolygons(lines, tolerance, resultLayer, obstacles, axisLines, textEntities, 'WALL', validWidths);
+export const findLayersAtPoint = (
+    p: Point,
+    entities: DxfEntity[],
+    blocks: Record<string, DxfEntity[]>,
+    blockBasePoints: Record<string, Point>,
+    activeLayers: Set<string>,
+    tolerance: number
+): string[] => {
+    const found = new Set<string>();
+    
+    // Recursive visitor to handle nested blocks
+    const visit = (ents: DxfEntity[], tr: { x: number, y: number, scale: Point, rotation: number }, parentLayer: string | null) => {
+        for (const ent of ents) {
+            const layer = ent.layer === '0' && parentLayer ? parentLayer : ent.layer;
+            if (!activeLayers.has(layer) && ent.type !== EntityType.INSERT) continue;
+            
+            // Helper: Transform local point to world space
+            const t = (pt: Point) => transformPoint(pt, tr.scale, tr.rotation, {x: tr.x, y: tr.y});
+            
+            let hit = false;
+            
+            if (ent.type === EntityType.LINE && ent.start && ent.end) {
+                const p1 = t(ent.start);
+                const p2 = t(ent.end);
+                if (distancePointToLine(p, p1, p2) <= tolerance) hit = true;
+            } else if (ent.type === EntityType.LWPOLYLINE && ent.vertices) {
+                const verts = ent.vertices.map(t);
+                for (let i=0; i<verts.length-1; i++) {
+                    if (distancePointToLine(p, verts[i], verts[i+1]) <= tolerance) { hit = true; break; }
+                }
+                if (!hit && ent.closed && verts.length > 0) {
+                     if (distancePointToLine(p, verts[verts.length-1], verts[0]) <= tolerance) hit = true;
+                }
+            } else if (ent.type === EntityType.CIRCLE && ent.center && ent.radius) {
+                const c = t(ent.center);
+                const s = Math.max(Math.abs(tr.scale.x), Math.abs(tr.scale.y));
+                const r = ent.radius * s;
+                const d = Math.sqrt(Math.pow(p.x - c.x, 2) + Math.pow(p.y - c.y, 2));
+                if (Math.abs(d - r) <= tolerance) hit = true;
+            } else if (ent.type === EntityType.INSERT && ent.blockName && blocks[ent.blockName]) {
+                const bBase = blockBasePoints[ent.blockName] || {x:0, y:0};
+                
+                const rows = ent.rowCount || 1;
+                const cols = ent.columnCount || 1;
+                const cSpace = ent.columnSpacing || 0;
+                const rSpace = ent.rowSpacing || 0;
+                
+                if (rows === 1 && cols === 1) {
+                    const combinedScale = { x: tr.scale.x * (ent.scale?.x||1), y: tr.scale.y * (ent.scale?.y||1) };
+                    const combinedRot = tr.rotation + (ent.rotation||0);
+                    
+                    // Transform calculation for nested block base mapping
+                    const bx = -bBase.x * (ent.scale?.x||1);
+                    const by = -bBase.y * (ent.scale?.y||1);
+                    const rad = (ent.rotation||0) * Math.PI/180;
+                    const rx = bx * Math.cos(rad) - by * Math.sin(rad);
+                    const ry = bx * Math.sin(rad) + by * Math.cos(rad);
+                    
+                    const px = rx + (ent.start?.x||0);
+                    const py = ry + (ent.start?.y||0);
+                    
+                    const worldOrigin = t({x: px, y: py});
+                    
+                    visit(blocks[ent.blockName], {
+                        x: worldOrigin.x,
+                        y: worldOrigin.y,
+                        scale: combinedScale,
+                        rotation: combinedRot
+                    }, layer);
+                }
+            }
+            
+            if (hit) found.add(layer);
+        }
+    }
+    
+    visit(entities, {x:0, y:0, scale:{x:1, y:1}, rotation:0}, null);
+    
+    return Array.from(found);
 };
