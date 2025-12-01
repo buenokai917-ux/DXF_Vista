@@ -71,6 +71,10 @@ export const generateMockDxfContent = (): string => {
   addLine("WALL", 10250, 100, 19750, 100);
   addLine("WALL", 10250, -100, 19750, -100);
 
+  // --- 5. Merge Test Labels ---
+  // Labels that should be merged (consolidated)
+  addText("DIM", "1000", 5000, 500);
+
   // Footer
   push("0"); push("ENDSEC");
   push("0"); push("EOF");
