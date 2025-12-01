@@ -3,9 +3,8 @@ import { ProjectFile } from '../../types';
 import { runCalculateSplitRegions, runMergeViews } from '../../domains/structure-views';
 import { runCalculateColumns, runCalculateWalls } from '../../domains/structure-verticals';
 import { runBeamHardSplit, runBeamAttributeMounting, runBeamTopologyMerge, runBeamPropagation } from '../../domains/structure-beams';
-import { runStructureTests } from '../../tests/structureSuite';
 import { Button } from '../Button';
-import { Grid, Merge, Box, ArrowRightLeft, AlignJustify, Tag, GitMerge, Radio, TestTube2 } from 'lucide-react';
+import { Grid, Merge, Box, ArrowRightLeft, AlignJustify, Tag, GitMerge, Radio } from 'lucide-react';
 
 interface StructurePanelProps {
     activeProject: ProjectFile | null;
@@ -124,18 +123,6 @@ export const StructurePanel: React.FC<StructurePanelProps> = ({
                         Step 4: Propagation
                     </Button>
                 </div>
-            </div>
-
-             {/* Diagnostics */}
-             <div className="pt-4 border-t border-slate-800">
-                <Button 
-                    onClick={runStructureTests}
-                    variant="secondary" 
-                    className="w-full text-xs py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white"
-                    icon={<TestTube2 size={12} />}
-                >
-                    Run Integration Tests
-                </Button>
             </div>
         </div>
     );
