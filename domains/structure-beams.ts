@@ -2,12 +2,12 @@ import React from 'react';
 import { DxfEntity, EntityType, Point, Bounds, ProjectFile } from '../types';
 import { extractEntities } from '../utils/dxfHelpers';
 import { updateProject, getMergeBaseBounds, findEntitiesInAllProjects, isEntityInBounds, filterEntitiesInBounds } from './structure-common';
-import { 
-    getBeamProperties, 
-    getCenter, 
-    findParallelPolygonsBeam, 
-    getEntityBounds, 
-    distance, 
+import {
+    getBeamProperties,
+    getCenter,
+    findParallelPolygonsBeam,
+    getEntityBounds,
+    distance,
     boundsOverlap
 } from '../utils/geometryUtils';
 
@@ -94,7 +94,7 @@ const hydrateBeamSegmentsFromLayer = (project: ProjectFile, layer: string): Beam
 };
 
 const ensureBeamStageColor = (
-    layer: string, 
+    layer: string,
     setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>
 ) => {
     if (DEFAULT_BEAM_STAGE_COLORS[layer]) {
@@ -112,31 +112,31 @@ const attachAttributesToSegments = (
     return segments.map(seg => {
         const center = getCenter(seg);
         if (!center) return seg;
-        
+
         // Filter nearby texts
         const candidates = textEntities.filter(t => {
             if (!t.start || !t.text) return false;
             const d = distance(t.start, center);
             if (d > 1500) return false;
-             
-             return true;
+
+            return true;
         });
 
         // Sort by proximity
         candidates.sort((a, b) => distance(a.start!, center) - distance(b.start!, center));
-        
+
         let bestLabel: string | null = null;
         let bestType: BeamTypeTag = 'UNKNOWN';
-        
+
         for (const t of candidates) {
             const { label, type } = parseBeamTypeFromText(t.text);
             if (type !== 'UNKNOWN') {
                 bestLabel = label;
                 bestType = type;
-                break; 
+                break;
             }
         }
-        
+
         return {
             ...seg,
             beamLabel: bestLabel || seg.beamLabel,
@@ -147,11 +147,11 @@ const attachAttributesToSegments = (
 
 const groupBeamSegments = (segments: BeamSegment[]): { groups: Map<string, BeamSegment[]>, info: Map<string, SegmentInfo> } => {
     const info = new Map<string, SegmentInfo>();
-    
+
     segments.forEach(s => {
         const props = getBeamProperties(s);
-        const center = getCenter(s) || {x:0, y:0};
-        const bounds = getEntityBounds(s) || {minX:0, minY:0, maxX:0, maxY:0};
+        const center = getCenter(s) || { x: 0, y: 0 };
+        const bounds = getEntityBounds(s) || { minX: 0, minY: 0, maxX: 0, maxY: 0 };
         info.set(s.__beamId, {
             id: s.__beamId,
             center,
@@ -162,7 +162,7 @@ const groupBeamSegments = (segments: BeamSegment[]): { groups: Map<string, BeamS
             bounds
         });
     });
-    
+
     const uf = new Map<string, string>();
     const find = (i: string): string => {
         if (!uf.has(i)) uf.set(i, i);
@@ -174,49 +174,49 @@ const groupBeamSegments = (segments: BeamSegment[]): { groups: Map<string, BeamS
         const rootJ = find(j);
         if (rootI !== rootJ) uf.set(rootI, rootJ);
     };
-    
+
     for (let i = 0; i < segments.length; i++) {
         for (let j = i + 1; j < segments.length; j++) {
             const s1 = segments[i];
             const s2 = segments[j];
             const i1 = info.get(s1.__beamId)!;
             const i2 = info.get(s2.__beamId)!;
-            
+
             if (i1.orientation !== i2.orientation) continue;
-            
+
             let connected = false;
 
             if (i1.orientation === 'H') {
-                 if (Math.abs(i1.center.y - i2.center.y) < 200) {
-                     const b1 = i1.bounds;
-                     const b2 = i2.bounds;
-                     if (b1.maxX + 100 >= b2.minX && b1.minX - 100 <= b2.maxX) {
-                         connected = true;
-                     }
-                 }
+                if (Math.abs(i1.center.y - i2.center.y) < 200) {
+                    const b1 = i1.bounds;
+                    const b2 = i2.bounds;
+                    if (b1.maxX + 100 >= b2.minX && b1.minX - 100 <= b2.maxX) {
+                        connected = true;
+                    }
+                }
             } else {
-                 if (Math.abs(i1.center.x - i2.center.x) < 200) {
-                     const b1 = i1.bounds;
-                     const b2 = i2.bounds;
-                     if (b1.maxY + 100 >= b2.minY && b1.minY - 100 <= b2.maxY) {
-                         connected = true;
-                     }
-                 }
+                if (Math.abs(i1.center.x - i2.center.x) < 200) {
+                    const b1 = i1.bounds;
+                    const b2 = i2.bounds;
+                    if (b1.maxY + 100 >= b2.minY && b1.minY - 100 <= b2.maxY) {
+                        connected = true;
+                    }
+                }
             }
-            
+
             if (connected) {
                 union(s1.__beamId, s2.__beamId);
             }
         }
     }
-    
+
     const groups = new Map<string, BeamSegment[]>();
     segments.forEach(s => {
         const root = find(s.__beamId);
         if (!groups.has(root)) groups.set(root, []);
         groups.get(root)!.push(s);
     });
-    
+
     return { groups, info };
 };
 
@@ -228,15 +228,15 @@ const collectBeamSources = (
         alert('Please run "Split Views" first.');
         return null;
     }
-    
+
     const hasMergeLabel = activeProject.data.layers.includes('MERGE_LABEL');
-    
+
     if (!hasMergeLabel) {
         console.warn('Beam pipeline requires Merge Views for best results.');
     }
 
     const baseBounds = getMergeBaseBounds(activeProject, 2500);
-    
+
     // 1. Find Annotation Layers
     const beamTextLayers = activeProject.data.layers.filter(l => {
         const u = l.toUpperCase();
@@ -253,20 +253,20 @@ const collectBeamSources = (
     let rawEntities = extractEntities(beamLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
     let rawAxisEntities = extractEntities(['AXIS'], activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints).filter(e => e.type === EntityType.LINE);
     let rawTextEntities = extractEntities(beamTextLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
-        .filter(e => e.type === EntityType.TEXT && !e.layer.toUpperCase().startsWith('Z_')); 
+        .filter(e => e.type === EntityType.TEXT && !e.layer.toUpperCase().startsWith('Z_'));
 
     const entities = filterEntitiesInBounds(rawEntities, baseBounds);
     const axisEntities = filterEntitiesInBounds(rawAxisEntities, baseBounds);
     const textEntities = filterEntitiesInBounds(rawTextEntities, baseBounds);
 
     // FIXED OBSTACLE COLLECTION: Strictly prefer CALC layers if present
-    
+
     // 1. Walls
     let walls: DxfEntity[] = [];
     const wallCalcLayer = activeProject.data.layers.find(l => l === 'WALL_CALC');
     if (wallCalcLayer) {
         walls = extractEntities([wallCalcLayer], activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
-    } 
+    }
     // Only fallback if CALC layer is strictly empty or missing
     if (walls.length === 0) {
         const rawWallLayers = activeProject.data.layers.filter(l => /wall|墙/i.test(l) && !l.endsWith('_CALC'));
@@ -289,8 +289,8 @@ const collectBeamSources = (
 
     // Last resort fallback
     if (cols.length < 5) {
-         const globalCols = findEntitiesInAllProjects(projects, /colu|column|柱/i);
-         if (cols.length === 0) cols = globalCols; 
+        const globalCols = findEntitiesInAllProjects(projects, /colu|column|柱/i);
+        if (cols.length === 0) cols = globalCols;
     }
 
     const obstacles = [...walls, ...cols];
@@ -302,27 +302,27 @@ const collectBeamSources = (
             if (!baseBounds || isEntityInBounds(ax, baseBounds)) axisLines.push(ax);
         });
     }
-    
+
     // 2. Extract Valid Widths from Text
     const textPool = [...textEntities];
     const validWidths = new Set<number>();
-    
+
     textPool.forEach(t => {
         if (!t.text) return;
         const matches = t.text.match(/^.+\s+(\d+)[xX×]\d+/);
         if (matches) {
             const w = parseInt(matches[1], 10);
-            if (!isNaN(w) && w >= 100 && w <= 2000) { 
+            if (!isNaN(w) && w >= 100 && w <= 2000) {
                 validWidths.add(w);
             }
         } else {
-             const simpleMatch = t.text.match(/^(\d+)[xX×]\d+$/);
-             if (simpleMatch) {
+            const simpleMatch = t.text.match(/^(\d+)[xX×]\d+$/);
+            if (simpleMatch) {
                 const w = parseInt(simpleMatch[1], 10);
                 if (!isNaN(w) && w >= 100 && w <= 2000) {
                     validWidths.add(w);
                 }
-             }
+            }
         }
     });
 
@@ -334,13 +334,13 @@ const collectBeamSources = (
             lines.push(ent);
         } else if (ent.type === EntityType.LWPOLYLINE && ent.vertices && ent.vertices.length > 1) {
             if (ent.closed) polylines.push(ent);
-            
+
             const verts = ent.vertices;
-            for(let i=0; i<verts.length - 1; i++) {
-                 lines.push({ type: EntityType.LINE, layer: ent.layer, start: verts[i], end: verts[i+1] });
+            for (let i = 0; i < verts.length - 1; i++) {
+                lines.push({ type: EntityType.LINE, layer: ent.layer, start: verts[i], end: verts[i + 1] });
             }
             if (ent.closed) {
-                 lines.push({ type: EntityType.LINE, layer: ent.layer, start: verts[verts.length-1], end: verts[0] });
+                lines.push({ type: EntityType.LINE, layer: ent.layer, start: verts[verts.length - 1], end: verts[0] });
             }
         }
     });
@@ -380,29 +380,29 @@ const computeOBB = (poly: DxfEntity): OBB | null => {
     const p3 = poly.vertices[3];
 
     if (!p0 || !p1 || !p3) return null;
-    
+
     const v01 = { x: p1.x - p0.x, y: p1.y - p0.y };
     const v03 = { x: p3.x - p0.x, y: p3.y - p0.y };
     const len01 = Math.sqrt(v01.x * v01.x + v01.y * v01.y);
     const len03 = Math.sqrt(v03.x * v03.x + v03.y * v03.y);
-    
+
     let u: Point, v: Point, len: number, width: number;
-    
+
     if (len01 > len03) {
-        if (len01 === 0) return null; 
-        u = { x: v01.x/len01, y: v01.y/len01 };
-        v = { x: v03.x/len03, y: v03.y/len03 };
+        if (len01 === 0) return null;
+        u = { x: v01.x / len01, y: v01.y / len01 };
+        v = { x: v03.x / len03, y: v03.y / len03 };
         len = len01;
         width = len03;
     } else {
-        if (len03 === 0) return null; 
-        u = { x: v03.x/len03, y: v03.y/len03 };
-        v = { x: v01.x/len01, y: v01.y/len01 };
+        if (len03 === 0) return null;
+        u = { x: v03.x / len03, y: v03.y / len03 };
+        v = { x: v01.x / len01, y: v01.y / len01 };
         len = len03;
         width = len01;
     }
 
-    const project = (p: Point) => (p.x - center.x)*u.x + (p.y - center.y)*u.y;
+    const project = (p: Point) => (p.x - center.x) * u.x + (p.y - center.y) * u.y;
     let minT = Infinity, maxT = -Infinity;
     poly.vertices.forEach(vert => {
         if (!vert) return;
@@ -415,8 +415,8 @@ const computeOBB = (poly: DxfEntity): OBB | null => {
         center,
         u,
         v,
-        halfLen: len/2,
-        halfWidth: width/2,
+        halfLen: len / 2,
+        halfWidth: width / 2,
         minT,
         maxT,
         entity: poly
@@ -448,7 +448,7 @@ const rayIntersectsAABB = (origin: Point, dir: Point, bounds: Bounds): { tmin: n
     } else if (origin.y < bounds.minY || origin.y > bounds.maxY) {
         return { tmin: Infinity, tmax: -Infinity };
     }
-    
+
     return { tmin, tmax };
 };
 
@@ -457,17 +457,17 @@ const rayIntersectsOBB = (origin: Point, dir: Point, target: OBB): number => {
 
     // Transform Ray to Target Local Space
     const delta = { x: origin.x - target.center.x, y: origin.y - target.center.y };
-    
+
     // Project delta onto Target axes
     const pU = delta.x * target.u.x + delta.y * target.u.y;
     const pV = delta.x * target.v.x + delta.y * target.v.y;
-    
+
     // Project ray dir onto Target axes
     const dU = dir.x * target.u.x + dir.y * target.u.y;
     const dV = dir.x * target.v.x + dir.y * target.v.y;
-    
+
     // Now we have ray: Origin(pU, pV), Dir(dU, dV)
-    
+
     let tMin = -Infinity, tMax = Infinity;
 
     // Check V slab (Width)
@@ -492,7 +492,7 @@ const rayIntersectsOBB = (origin: Point, dir: Point, target: OBB): number => {
 
     if (tMax < tMin) return Infinity;
     if (tMax < 0) return Infinity;
-    
+
     return tMin > 0 ? tMin : 0;
 };
 
@@ -513,7 +513,7 @@ const mergeAlignedPolygons = (polys: DxfEntity[]): DxfEntity[] => {
         // Assume same orientation
         // construct new bounds in world space if axis aligned
         const isV = Math.abs(a.u.y) > Math.abs(a.u.x);
-        
+
         let minU: number, maxU: number;
         let center: Point, width: number;
 
@@ -526,19 +526,19 @@ const mergeAlignedPolygons = (polys: DxfEntity[]): DxfEntity[] => {
             const minX = Math.min(minXa, minXb);
             const maxX = Math.max(maxXa, maxXb);
             const len = maxX - minX;
-            center = { x: minX + len/2, y: (a.center.y + b.center.y)/2 };
-            width = Math.max(a.halfWidth*2, b.halfWidth*2);
-            minU = -len/2;
-            maxU = len/2;
-            
+            center = { x: minX + len / 2, y: (a.center.y + b.center.y) / 2 };
+            width = Math.max(a.halfWidth * 2, b.halfWidth * 2);
+            minU = -len / 2;
+            maxU = len / 2;
+
             return {
                 ...a,
                 center,
-                halfWidth: width/2,
-                halfLen: len/2,
+                halfWidth: width / 2,
+                halfLen: len / 2,
                 minT: minU,
                 maxT: maxU,
-                u: {x:1, y:0}, v: {x:0, y:1} // Normalize to pure H
+                u: { x: 1, y: 0 }, v: { x: 0, y: 1 } // Normalize to pure H
             };
         } else {
             // Vertical
@@ -549,70 +549,70 @@ const mergeAlignedPolygons = (polys: DxfEntity[]): DxfEntity[] => {
             const minY = Math.min(minYa, minYb);
             const maxY = Math.max(maxYa, maxYb);
             const len = maxY - minY;
-            center = { x: (a.center.x + b.center.x)/2, y: minY + len/2 };
-            width = Math.max(a.halfWidth*2, b.halfWidth*2);
-            minU = -len/2;
-            maxU = len/2;
-            
-             return {
+            center = { x: (a.center.x + b.center.x) / 2, y: minY + len / 2 };
+            width = Math.max(a.halfWidth * 2, b.halfWidth * 2);
+            minU = -len / 2;
+            maxU = len / 2;
+
+            return {
                 ...a,
                 center,
-                halfWidth: width/2,
-                halfLen: len/2,
+                halfWidth: width / 2,
+                halfLen: len / 2,
                 minT: minU,
                 maxT: maxU,
-                u: {x:0, y:1}, v: {x:-1, y:0} // Normalize to pure V
+                u: { x: 0, y: 1 }, v: { x: -1, y: 0 } // Normalize to pure V
             };
         }
     };
 
     // Sort by "Primary Axis Coordinate" to facilitate bucketing
     // But since we have arbitrary angles, let's just do N^2 pass with `used` set 
-    
+
     for (let i = 0; i < items.length; i++) {
         if (used.has(i)) continue;
         let current = items[i].obb;
         let layer = items[i].poly.layer;
         used.add(i);
-        
+
         let changed = true;
-        while(changed) {
+        while (changed) {
             changed = false;
             // Try to find a merge candidate
             for (let j = i + 1; j < items.length; j++) {
                 if (used.has(j)) continue;
                 const other = items[j].obb;
-                
+
                 // 1. Orientation Check
                 const dot = Math.abs(current.u.x * other.u.x + current.u.y * other.u.y);
                 if (dot < 0.98) continue;
 
                 // 2. Alignment Check (Transverse distance)
                 // Project other center onto current V axis
-                const dv = (other.center.x - current.center.x)*current.v.x + (other.center.y - current.center.y)*current.v.y;
+                const dv = (other.center.x - current.center.x) * current.v.x + (other.center.y - current.center.y) * current.v.y;
                 if (Math.abs(dv) > 50) continue; // Must be aligned within 50mm
 
                 // 3. Overlap/Touch Check (Longitudinal)
                 // Project intervals onto U
-                const du = (other.center.x - current.center.x)*current.u.x + (other.center.y - current.center.y)*current.u.y;
+                const du = (other.center.x - current.center.x) * current.u.x + (other.center.y - current.center.y) * current.u.y;
                 const minOth = du + other.minT;
                 const maxOth = du + other.maxT;
-                
+
                 const minCur = current.minT;
                 const maxCur = current.maxT;
 
                 // Check gap
                 const gap = Math.max(minCur, minOth) - Math.min(maxCur, maxOth);
                 // Allow a gap of ~600mm
-                if (gap > 600) continue; 
-                
+                if (gap > 600) continue;
+
                 // MERGE
                 current = merge(current, other);
                 used.add(j);
                 changed = true;
             }
         }
-        
+
         // Reconstruct Poly from merged OBB
         const c = current.center;
         const hw = current.halfWidth;
@@ -620,12 +620,12 @@ const mergeAlignedPolygons = (polys: DxfEntity[]): DxfEntity[] => {
         const maxT = current.maxT;
         const u = current.u;
         const v = current.v;
-        
-        const p1 = { x: c.x + u.x*minT - v.x*hw, y: c.y + u.y*minT - v.y*hw };
-        const p2 = { x: c.x + u.x*maxT - v.x*hw, y: c.y + u.y*maxT - v.y*hw };
-        const p3 = { x: c.x + u.x*maxT + v.x*hw, y: c.y + u.y*maxT + v.y*hw };
-        const p4 = { x: c.x + u.x*minT + v.x*hw, y: c.y + u.y*minT + v.y*hw };
-        
+
+        const p1 = { x: c.x + u.x * minT - v.x * hw, y: c.y + u.y * minT - v.y * hw };
+        const p2 = { x: c.x + u.x * maxT - v.x * hw, y: c.y + u.y * maxT - v.y * hw };
+        const p3 = { x: c.x + u.x * maxT + v.x * hw, y: c.y + u.y * maxT + v.y * hw };
+        const p4 = { x: c.x + u.x * minT + v.x * hw, y: c.y + u.y * minT + v.y * hw };
+
         mergedItems.push({
             poly: {
                 type: EntityType.LWPOLYLINE,
@@ -641,20 +641,20 @@ const mergeAlignedPolygons = (polys: DxfEntity[]): DxfEntity[] => {
 };
 
 const createSubPoly = (
-    center: Point, 
-    u: Point, 
-    v: Point, 
-    width: number, 
-    tStart: number, 
-    tEnd: number, 
+    center: Point,
+    u: Point,
+    v: Point,
+    width: number,
+    tStart: number,
+    tEnd: number,
     layer: string
 ): DxfEntity => {
     const hw = width / 2;
-    
+
     // Calculate base points on the centerline
     const b1 = { x: center.x + u.x * tStart, y: center.y + u.y * tStart };
     const b2 = { x: center.x + u.x * tEnd, y: center.y + u.y * tEnd };
-    
+
     // Calculate corners
     // p1: start-left, p2: end-left, p3: end-right, p4: start-right
     // Note: 'v' is lateral vector
@@ -682,8 +682,8 @@ const cutPolygonsByObstacles = (
     polys.forEach(poly => {
         // SAFEGUARD: Ensure vertices exist and have enough points
         if (!poly.vertices || poly.vertices.length < 4) {
-             results.push(poly);
-             return;
+            results.push(poly);
+            return;
         }
 
         const center = getCenter(poly);
@@ -703,18 +703,18 @@ const cutPolygonsByObstacles = (
         const v03 = { x: p3.x - p0.x, y: p3.y - p0.y };
         const len01 = Math.sqrt(v01.x * v01.x + v01.y * v01.y);
         const len03 = Math.sqrt(v03.x * v03.x + v03.y * v03.y);
-        
+
         let u: Point, v: Point, width: number, length: number;
         if (len01 > len03) {
             if (len01 === 0) { results.push(poly); return; } // Protect div by 0
-            u = { x: v01.x/len01, y: v01.y/len01 };
-            v = { x: v03.x/len03, y: v03.y/len03 };
+            u = { x: v01.x / len01, y: v01.y / len01 };
+            v = { x: v03.x / len03, y: v03.y / len03 };
             length = len01;
             width = len03;
         } else {
             if (len03 === 0) { results.push(poly); return; } // Protect div by 0
-            u = { x: v03.x/len03, y: v03.y/len03 };
-            v = { x: v01.x/len01, y: v01.y/len01 };
+            u = { x: v03.x / len03, y: v03.y / len03 };
+            v = { x: v01.x / len01, y: v01.y / len01 };
             length = len03;
             width = len01;
         }
@@ -728,7 +728,7 @@ const cutPolygonsByObstacles = (
         });
 
         const blockers: [number, number][] = [];
-        
+
         obstacles.forEach(obs => {
             const b = getEntityBounds(obs);
             if (!b) return;
@@ -736,29 +736,29 @@ const cutPolygonsByObstacles = (
             if (!polyB || !boundsOverlap(polyB, b)) return;
 
             const obsCorners = [
-                {x: b.minX, y: b.minY}, {x: b.maxX, y: b.minY},
-                {x: b.maxX, y: b.maxY}, {x: b.minX, y: b.maxY}
+                { x: b.minX, y: b.minY }, { x: b.maxX, y: b.minY },
+                { x: b.maxX, y: b.maxY }, { x: b.minX, y: b.maxY }
             ];
-            
+
             let oMinV = Infinity, oMaxV = -Infinity;
             let oMinT = Infinity, oMaxT = -Infinity;
 
             obsCorners.forEach(c => {
-                const tv = (c.x - center.x)*v.x + (c.y - center.y)*v.y;
-                const tt = (c.x - center.x)*u.x + (c.y - center.y)*u.y;
+                const tv = (c.x - center.x) * v.x + (c.y - center.y) * v.y;
+                const tt = (c.x - center.x) * u.x + (c.y - center.y) * u.y;
                 oMinV = Math.min(oMinV, tv);
                 oMaxV = Math.max(oMaxV, tv);
                 oMinT = Math.min(oMinT, tt);
                 oMaxT = Math.max(oMaxT, tt);
             });
 
-            const overlapVStart = Math.max(-width/2, oMinV);
-            const overlapVEnd = Math.min(width/2, oMaxV);
+            const overlapVStart = Math.max(-width / 2, oMinV);
+            const overlapVEnd = Math.min(width / 2, oMaxV);
 
             // STRICTER CHECK: Overlap > 2% width or > 5mm (Very strict to prevent any overlap)
             const overlapV = overlapVEnd - overlapVStart;
             if (overlapV > Math.min(width * 0.02, 5)) {
-                 blockers.push([oMinT, oMaxT]);
+                blockers.push([oMinT, oMaxT]);
             }
         });
 
@@ -766,7 +766,7 @@ const cutPolygonsByObstacles = (
         const mergedBlockers: [number, number][] = [];
         if (blockers.length > 0) {
             let curr = blockers[0];
-            for (let i=1; i<blockers.length; i++) {
+            for (let i = 1; i < blockers.length; i++) {
                 if (blockers[i][0] < curr[1]) {
                     curr[1] = Math.max(curr[1], blockers[i][1]);
                 } else {
@@ -780,7 +780,7 @@ const cutPolygonsByObstacles = (
         let currentT = minT;
         mergedBlockers.forEach(blk => {
             // Only create segment if gap is substantial (e.g. > 10mm)
-            if (blk[0] > currentT + 10) { 
+            if (blk[0] > currentT + 10) {
                 const segEnd = Math.min(blk[0], maxT);
                 if (segEnd > currentT) {
                     results.push(createSubPoly(center, u, v, width, currentT, segEnd, poly.layer));
@@ -788,7 +788,7 @@ const cutPolygonsByObstacles = (
             }
             currentT = Math.max(currentT, blk[1]);
         });
-        
+
         if (currentT < maxT - 10) {
             results.push(createSubPoly(center, u, v, width, currentT, maxT, poly.layer));
         }
@@ -800,13 +800,13 @@ const cutPolygonsByObstacles = (
 // --- EXTENSION LOGIC ---
 
 const castRayForExtension = (
-    origin: Point, 
-    dir: Point, 
-    obstacles: { ent: DxfEntity, bounds: Bounds }[], 
+    origin: Point,
+    dir: Point,
+    obstacles: { ent: DxfEntity, bounds: Bounds }[],
     maxDist: number
 ): number | null => {
     let closest = Infinity;
-    
+
     obstacles.forEach(obs => {
         const { tmin, tmax } = rayIntersectsAABB(origin, dir, obs.bounds);
         if (tmax < tmin) return; // No intersection
@@ -815,7 +815,7 @@ const castRayForExtension = (
 
         // We want the first entry point
         const dist = tmin < 0 ? 0 : tmin; // If inside, dist is 0 (or treat as touching)
-        
+
         // Heuristic: If we are already inside, we don't need to extend.
         // But if we are close (dist > 0 && dist < maxDist), we extend.
         if (dist < closest) {
@@ -841,14 +841,14 @@ const performSmartBeamExtension = (
 
         // Use obb.u as direction. obb.minT is 'start' (negative), obb.maxT is 'end' (positive).
         const { center, u, v, halfWidth, minT, maxT } = obb;
-        
+
         // Current End Points
         const startPt = { x: center.x + u.x * minT, y: center.y + u.y * minT };
         const endPt = { x: center.x + u.x * maxT, y: center.y + u.y * maxT };
-        
+
         // Ray 1: From endPt in direction u
         const ext1 = castRayForExtension(endPt, u, obstacleBounds, 600);
-        
+
         // Ray 2: From startPt in direction -u
         const ext2 = castRayForExtension(startPt, { x: -u.x, y: -u.y }, obstacleBounds, 600);
 
@@ -862,16 +862,16 @@ const performSmartBeamExtension = (
 
         // Reconstruct
         const hw = halfWidth;
-        
+
         // p1/p2 at newMaxT (end)
         // p3/p4 at newMinT (start)
-        
+
         // Vertices for polygon
-        const p_end_left = { x: center.x + u.x*newMaxT + v.x*hw, y: center.y + u.y*newMaxT + v.y*hw };
-        const p_end_right = { x: center.x + u.x*newMaxT - v.x*hw, y: center.y + u.y*newMaxT - v.y*hw };
-        const p_start_right = { x: center.x + u.x*newMinT - v.x*hw, y: center.y + u.y*newMinT - v.y*hw };
-        const p_start_left = { x: center.x + u.x*newMinT + v.x*hw, y: center.y + u.y*newMinT + v.y*hw };
-        
+        const p_end_left = { x: center.x + u.x * newMaxT + v.x * hw, y: center.y + u.y * newMaxT + v.y * hw };
+        const p_end_right = { x: center.x + u.x * newMaxT - v.x * hw, y: center.y + u.y * newMaxT - v.y * hw };
+        const p_start_right = { x: center.x + u.x * newMinT - v.x * hw, y: center.y + u.y * newMinT - v.y * hw };
+        const p_start_left = { x: center.x + u.x * newMinT + v.x * hw, y: center.y + u.y * newMinT + v.y * hw };
+
         return {
             type: EntityType.LWPOLYLINE,
             layer: poly.layer,
@@ -885,8 +885,8 @@ const performSmartBeamExtension = (
 
 // STEP 1: RAW GENERATION
 export const runBeamRawGeneration = (
-    activeProject: ProjectFile, 
-    projects: ProjectFile[], 
+    activeProject: ProjectFile,
+    projects: ProjectFile[],
     setProjects: React.Dispatch<React.SetStateAction<ProjectFile[]>>,
     setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>
 ) => {
@@ -895,11 +895,17 @@ export const runBeamRawGeneration = (
     const resultLayer = 'BEAM_STEP1_RAW';
     const contextLayers = ['WALL_CALC', 'COLU_CALC', 'AXIS', ...sources.beamTextLayers];
 
-    // Only filter columns as hard obstacles for raw generation, allowing beams inside walls to be found
-    const allObstacles = sources.obstacles;
-    const columnsOnly = allObstacles.filter(o => /colu|column|柱/i.test(o.layer));
+    // Columns/Walls are highest priority: prefer *_CALC obstacles
+    const calcObstacles = sources.obstacles.filter(o => o.layer === 'WALL_CALC' || o.layer === 'COLU_CALC');
+    const obstaclesForRaw = calcObstacles.length > 0 ? calcObstacles : sources.obstacles;
 
-    console.log(`Detected valid beam widths from annotation:`, Array.from(sources.validWidths).sort((a,b)=>a-b));
+    // Use geometric cutting to prevent beams intruding into columns/walls
+    const applyObstacleCuts = (candidates: DxfEntity[]): DxfEntity[] => {
+        const cut = cutPolygonsByObstacles(candidates, obstaclesForRaw);
+        return cut.filter(p => p.vertices && p.vertices.length >= 4);
+    };
+
+    console.log(`Detected valid beam widths from annotation:`, Array.from(sources.validWidths).sort((a, b) => a - b));
 
     // 1. Raw Generation 
     // Uses relaxed geometry rules (see findParallelPolygons in geometryUtils)
@@ -907,15 +913,17 @@ export const runBeamRawGeneration = (
         sources.lines,
         1200,
         resultLayer,
-        columnsOnly, 
+        obstaclesForRaw,
         sources.axisLines,
         sources.textPool,
         sources.validWidths,
         sources.lines
     );
-    
+    polys = applyObstacleCuts(polys);
+
     // Add explicitly drawn polylines
-    polys = [...polys, ...sources.polylines.map(p => ({...p, layer: resultLayer}))];
+    const explicitPolys = sources.polylines.map(p => ({ ...p, layer: resultLayer }));
+    polys = [...polys, ...applyObstacleCuts(explicitPolys)];
 
     if (polys.length === 0) {
         alert('No beam segments found. Check if BEAM layer is selected and visible.');
@@ -924,13 +932,13 @@ export const runBeamRawGeneration = (
 
     ensureBeamStageColor(resultLayer, setLayerColors);
     updateProject(
-        activeProject, 
-        setProjects, 
-        setLayerColors, 
-        resultLayer, 
-        polys, 
+        activeProject,
+        setProjects,
+        setLayerColors,
+        resultLayer,
+        polys,
         DEFAULT_BEAM_STAGE_COLORS[resultLayer],
-        contextLayers, 
+        contextLayers,
         true,
         undefined,
         [] // No previous beam layer to hide
@@ -940,8 +948,8 @@ export const runBeamRawGeneration = (
 
 // STEP 2: INTERSECTION PROCESSING (Merge, Extend, Cut)
 export const runBeamIntersectionProcessing = (
-    activeProject: ProjectFile, 
-    projects: ProjectFile[], 
+    activeProject: ProjectFile,
+    projects: ProjectFile[],
     setProjects: React.Dispatch<React.SetStateAction<ProjectFile[]>>,
     setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>
 ) => {
@@ -954,7 +962,7 @@ export const runBeamIntersectionProcessing = (
         alert('Please run Step 1 (Raw Generation) first.');
         return;
     }
-    
+
     let polys: DxfEntity[] = rawSegments.map(s => s as DxfEntity);
     const allObstacles = sources.obstacles;
 
@@ -972,13 +980,13 @@ export const runBeamIntersectionProcessing = (
 
     ensureBeamStageColor(resultLayer, setLayerColors);
     updateProject(
-        activeProject, 
-        setProjects, 
-        setLayerColors, 
-        resultLayer, 
-        segments, 
+        activeProject,
+        setProjects,
+        setLayerColors,
+        resultLayer,
+        segments,
         DEFAULT_BEAM_STAGE_COLORS[resultLayer],
-        contextLayers, 
+        contextLayers,
         true,
         undefined,
         ['BEAM_STEP1_RAW'] // Hide Step 1
@@ -988,17 +996,17 @@ export const runBeamIntersectionProcessing = (
 
 // STEP 3: ATTRIBUTES
 export const runBeamAttributeMounting = (
-    activeProject: ProjectFile, 
-    projects: ProjectFile[], 
+    activeProject: ProjectFile,
+    projects: ProjectFile[],
     setProjects: React.Dispatch<React.SetStateAction<ProjectFile[]>>,
     setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>
 ) => {
     const sources = collectBeamSources(activeProject, projects);
     if (!sources) return;
-    
+
     // Read from Step 2
     const baseSegments = hydrateBeamSegmentsFromLayer(activeProject, 'BEAM_STEP2_GEO');
-    
+
     if (baseSegments.length === 0) {
         alert('Please run Step 2 (Intersection Processing) first.');
         return;
@@ -1042,14 +1050,14 @@ export const runBeamAttributeMounting = (
 
 // STEP 4: TOPOLOGY MERGE
 export const runBeamTopologyMerge = (
-    activeProject: ProjectFile, 
-    projects: ProjectFile[], 
+    activeProject: ProjectFile,
+    projects: ProjectFile[],
     setProjects: React.Dispatch<React.SetStateAction<ProjectFile[]>>,
     setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>
 ) => {
     // Read from Step 3
     const segments = hydrateBeamSegmentsFromLayer(activeProject, 'BEAM_STEP3_ATTR');
-    
+
     if (segments.length === 0) {
         alert('Please run Step 3 first.');
         return;
@@ -1058,7 +1066,7 @@ export const runBeamTopologyMerge = (
     const { groups, info } = groupBeamSegments(segments);
     const resultLayer = 'BEAM_STEP4_LOGIC';
     const contextLayers = ['AXIS', 'WALL', 'COLU'];
-    
+
     const mergedEntities: DxfEntity[] = [];
     let labelIndex = 1;
 
@@ -1076,7 +1084,7 @@ export const runBeamTopologyMerge = (
 
         const groupType = dominant?.type || 'UNKNOWN';
         const groupLabel = segs.find(s => s.beamLabel)?.beamLabel || dominant?.label || null;
-        
+
         segs.forEach(seg => {
             mergedEntities.push({
                 ...(seg as DxfEntity),
@@ -1119,8 +1127,8 @@ export const runBeamTopologyMerge = (
 
 // STEP 5: PROPAGATION
 export const runBeamPropagation = (
-    activeProject: ProjectFile, 
-    projects: ProjectFile[], 
+    activeProject: ProjectFile,
+    projects: ProjectFile[],
     setProjects: React.Dispatch<React.SetStateAction<ProjectFile[]>>,
     setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>
 ) => {
@@ -1149,7 +1157,7 @@ export const runBeamPropagation = (
         const infoItem = info.get(segs[0].__beamId);
         const orientation = infoItem ? infoItem.orientation : 'H';
         const labelSeg = segs.find(s => s.beamLabel);
-        
+
         metas.push({
             id: root,
             segs,
@@ -1171,12 +1179,12 @@ export const runBeamPropagation = (
             const axisDist = group.orientation === 'H'
                 ? Math.abs(c.center.y - group.center.y)
                 : Math.abs(c.center.x - group.center.x);
-            
+
             // Must be relatively close (e.g. adjacent bays)
-            if (axisDist > 20000) return; 
-            
+            if (axisDist > 20000) return;
+
             // Favor aligned beams (small axis offset)
-            if (axisDist > 500) return; 
+            if (axisDist > 500) return;
 
             const alongDist = distance(c.center, group.center);
             if (!best || alongDist < best.dist) {
