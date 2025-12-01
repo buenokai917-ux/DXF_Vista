@@ -757,8 +757,14 @@ const cutPolygonsByObstacles = (
 
             // STRICTER CHECK: Overlap > 2% width or > 5mm (Very strict to prevent any overlap)
             const overlapV = overlapVEnd - overlapVStart;
-            if (overlapV > Math.min(width * 0.02, 5)) {
-                blockers.push([oMinT, oMaxT]);
+            const overlapTStart = Math.max(minT, oMinT);
+            const overlapTEnd = Math.min(maxT, oMaxT);
+
+            // Only consider blockers that actually overlap the beam footprint (both axes)
+            const hasLongitudinalOverlap = overlapTEnd - overlapTStart > 1;
+
+            if (overlapV > Math.min(width * 0.02, 5) && hasLongitudinalOverlap) {
+                blockers.push([overlapTStart, overlapTEnd]);
             }
         });
 
