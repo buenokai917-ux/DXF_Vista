@@ -1,7 +1,7 @@
 import React from 'react';
 import { DxfEntity, EntityType, Point, Bounds, ProjectFile } from '../types';
 import { extractEntities } from '../utils/dxfHelpers';
-import { updateProject, getMergeBaseBounds, findEntitiesInAllProjects, isEntityInBounds, filterEntitiesInBounds, isPointInBounds } from './structure-common';
+import { updateProject, getMergeBaseBounds, findEntitiesInAllProjects, isEntityInBounds, filterEntitiesInBounds, isPointInBounds, expandBounds } from './structure-common';
 import {
     getBeamProperties,
     getCenter,
@@ -178,7 +178,7 @@ const computeOBB = (poly: DxfEntity): OBB | null => {
     // Normalize U to point roughly East or South to ensure consistent direction for sorting
     if (u.x < -0.001 || (Math.abs(u.x) < 0.001 && u.y < -0.001)) {
         u = { x: -u.x, y: -u.y };
-        v = { x: -v.x, y: -v.y }; // Flip V to keep handedness? Actually OBB V direction doesn't matter much for projection magnitude
+        v = { x: -v.x, y: -v.y }; 
     }
 
     const project = (p: Point) => (p.x - center.x) * u.x + (p.y - center.y) * u.y;
@@ -199,7 +199,6 @@ const rayIntersectsAABB = (origin: Point, dir: Point, bounds: Bounds): { tmin: n
 
     if (!origin || !dir) return { tmin: Infinity, tmax: -Infinity };
 
-    // X-Axis
     if (Math.abs(dir.x) > 1e-9) {
         const t1 = (bounds.minX - origin.x) / dir.x;
         const t2 = (bounds.maxX - origin.x) / dir.x;
@@ -209,7 +208,6 @@ const rayIntersectsAABB = (origin: Point, dir: Point, bounds: Bounds): { tmin: n
         return { tmin: Infinity, tmax: -Infinity };
     }
 
-    // Y-Axis
     if (Math.abs(dir.y) > 1e-9) {
         const t1 = (bounds.minY - origin.y) / dir.y;
         const t2 = (bounds.maxY - origin.y) / dir.y;
@@ -222,27 +220,51 @@ const rayIntersectsAABB = (origin: Point, dir: Point, bounds: Bounds): { tmin: n
     return { tmin, tmax };
 };
 
-// --- CORE INTERSECTION LOGIC ---
+// Check if a beam is fully "anchored" (both ends touching obstacles)
+const isBeamFullyAnchored = (beam: DxfEntity, obstacles: DxfEntity[]): boolean => {
+    const obb = computeOBB(beam);
+    if (!obb) return false;
+    
+    // Check both ends (projected out by a tiny tolerance of 5mm)
+    const pFront = { x: obb.center.x + obb.u.x * (obb.maxT + 5), y: obb.center.y + obb.u.y * (obb.maxT + 5) };
+    const pBack = { x: obb.center.x + obb.u.x * (obb.minT - 5), y: obb.center.y + obb.u.y * (obb.minT - 5) };
+    
+    const isBlocked = (p: Point) => {
+        for (const obs of obstacles) {
+            const b = getEntityBounds(obs);
+            // Use strict bounds for walls/cols
+            if (b && isPointInBounds(p, b)) return true;
+        }
+        return false;
+    };
+
+    return isBlocked(pFront) && isBlocked(pBack);
+};
+
+// --- MERGE LOGIC (Step 1 & Step 2 Variants) ---
 
 /**
- * 1. Merge Collinear Beams (Step 2a)
- * Strict logic: Only merge if aligned, same width, and Gap is empty/valid.
- * 
- * @param polys Input beam polygons
- * @param obstacles Walls and Columns
- * @param maxGap Max allowable gap to bridge (Step 1: ~0, Step 2: large)
+ * Common merge function.
+ * @param strictCrossOnly If true, only merges if the gap is crossed by another beam (for Step 2).
  */
-const mergeCollinearBeams = (polys: DxfEntity[], obstacles: DxfEntity[], maxGap: number): DxfEntity[] => {
+const mergeCollinearBeams = (
+    polys: DxfEntity[], 
+    obstacles: DxfEntity[], 
+    allBeams: DxfEntity[],
+    maxGap: number,
+    strictCrossOnly: boolean
+): DxfEntity[] => {
     const items = polys.map(p => {
         const obb = computeOBB(p);
         return { poly: p, obb };
     }).filter(i => i.obb !== null) as { poly: DxfEntity, obb: OBB }[];
 
-    // Pre-calculate obstacle bounds for fast lookup
     const obsBounds = obstacles.map(o => getEntityBounds(o)).filter(b => b !== null) as Bounds[];
+    
+    // For Step 2 Cross Check: we need OBBs of all potential crossing beams
+    const allBeamOBBs = strictCrossOnly ? allBeams.map(b => computeOBB(b)).filter(o => o !== null) as OBB[] : [];
 
-    // Sort to optimize adjacency check
-    // We sort primarily by "Lane" (transverse position) then by "Longitudinal" position
+    // Sort
     items.sort((a, b) => {
         const isVa = Math.abs(a.obb.u.y) > Math.abs(a.obb.u.x);
         const laneA = isVa ? a.obb.center.x : a.obb.center.y;
@@ -257,18 +279,38 @@ const mergeCollinearBeams = (polys: DxfEntity[], obstacles: DxfEntity[], maxGap:
     const mergedPolys: DxfEntity[] = [];
     const used = new Set<number>();
 
-    // Helper to check if a specific gap region is blocked by any obstacle
-    const isGapBlocked = (pStart: Point, pEnd: Point, width: number): boolean => {
-        // Construct a bounding box for the gap
-        const minX = Math.min(pStart.x, pEnd.x) - 5; // buffer
+    // Helper: Check if gap contains a crossing beam (Step 2 logic)
+    const isGapCrossed = (pStart: Point, pEnd: Point, width: number, beamU: Point): boolean => {
+        const mid = { x: (pStart.x + pEnd.x)/2, y: (pStart.y + pEnd.y)/2 };
+        const gapLen = distance(pStart, pEnd);
+        
+        // Check against all beams
+        for (const other of allBeamOBBs) {
+             // 1. Must be perpendicular (Cross)
+             const dot = Math.abs(beamU.x * other.u.x + beamU.y * other.u.y);
+             if (dot > 0.1) continue; // Skip parallel
+
+             // 2. Must intersect the gap
+             // Simple check: is 'mid' inside the 'other' beam's lane?
+             // Project mid onto other's V axis
+             const vDist = Math.abs((mid.x - other.center.x)*other.v.x + (mid.y - other.center.y)*other.v.y);
+             // Project mid onto other's U axis
+             const uDist = Math.abs((mid.x - other.center.x)*other.u.x + (mid.y - other.center.y)*other.u.y);
+             
+             // Check if within bounds
+             if (vDist <= other.halfWidth + 10 && 
+                 uDist >= other.minT - 10 && uDist <= other.maxT + 10) {
+                 return true;
+             }
+        }
+        return false;
+    };
+
+    const isGapBlockedByObstacle = (pStart: Point, pEnd: Point, width: number): boolean => {
+        const minX = Math.min(pStart.x, pEnd.x) - 5;
         const maxX = Math.max(pStart.x, pEnd.x) + 5;
         const minY = Math.min(pStart.y, pEnd.y) - 5;
         const maxY = Math.max(pStart.y, pEnd.y) + 5;
-        
-        // Expand by width/2 in transverse direction roughly
-        // To be safe, we just check intersection of the AABB of the gap with obstacle AABBs
-        // A simple AABB check is often enough if aligned.
-        // For rotated beams, this is loose but safe (might block legitimate merges near corners).
         
         const gapBounds: Bounds = { 
             minX: minX - (width/2), maxX: maxX + (width/2), 
@@ -276,17 +318,7 @@ const mergeCollinearBeams = (polys: DxfEntity[], obstacles: DxfEntity[], maxGap:
         };
 
         for (const obs of obsBounds) {
-            if (boundsOverlap(gapBounds, obs)) {
-                // Precise check: If touching (Gap ~ 0), we check if the junction point is inside obstacle
-                const d = distance(pStart, pEnd);
-                if (d < 10) {
-                     // Check center of junction
-                     const mid = { x: (pStart.x + pEnd.x)/2, y: (pStart.y + pEnd.y)/2 };
-                     if (isPointInBounds(mid, obs)) return true;
-                } else {
-                     return true;
-                }
-            }
+            if (boundsOverlap(gapBounds, obs)) return true;
         }
         return false;
     };
@@ -297,7 +329,6 @@ const mergeCollinearBeams = (polys: DxfEntity[], obstacles: DxfEntity[], maxGap:
         
         const minA = a.minT; 
         const maxA = a.maxT;
-        // Project b center onto a's axis
         const centerRel = (b.center.x - a.center.x)*u.x + (b.center.y - a.center.y)*u.y;
         const minB = centerRel + b.minT;
         const maxB = centerRel + b.maxT;
@@ -330,42 +361,29 @@ const mergeCollinearBeams = (polys: DxfEntity[], obstacles: DxfEntity[], maxGap:
         let mergedSomething = true;
         while (mergedSomething) {
             mergedSomething = false;
-            // Only look ahead a bit since we sorted
             for (let j = i + 1; j < items.length; j++) {
                 if (used.has(j)) continue;
                 const next = items[j].obb;
                 
-                // 1. Orientation Check
+                // 1. Orientation
                 const dot = Math.abs(current.u.x * next.u.x + current.u.y * next.u.y);
-                if (dot < 0.98) continue; // Must be parallel
+                if (dot < 0.98) continue; 
 
-                // 2. Lane Check (Transverse distance)
+                // 2. Lane
                 const perpDist = Math.abs((next.center.x - current.center.x) * current.v.x + (next.center.y - current.center.y) * current.v.y);
-                if (perpDist > 50) continue; // Different lanes
+                if (perpDist > 50) continue; 
 
-                // 3. Gap Check
-                // Calculate distance along U axis
+                // 3. Gap
                 const distAlong = (next.center.x - current.center.x) * current.u.x + (next.center.y - current.center.y) * current.u.y;
-                
-                // Current Range: [minT, maxT]
-                // Next Range: [distAlong + minT, distAlong + maxT]
                 const nextStartT = distAlong + next.minT;
                 const gap = nextStartT - current.maxT;
 
-                if (gap > maxGap + 10) {
-                     // Since sorted, if gap is huge, we might not find closer ones easily, 
-                     // but we continue just in case list order is slightly off due to minor misalignments
-                     continue; 
-                }
+                if (gap > maxGap + 10) continue;
 
-                // If overlapping (gap < 0), logic should handle it (merge union)
-                // If gap > 0 but < maxGap, we proceed to check obstacles.
-
-                // 4. Width Check
+                // 4. Width
                 if (Math.abs(current.halfWidth - next.halfWidth) * 2 > 100) continue;
 
-                // 5. Obstacle Check (CRITICAL)
-                // Calculate world points of the "Gap"
+                // 5. Gap Logic
                 const pEndCurrent = { 
                     x: current.center.x + current.u.x * current.maxT, 
                     y: current.center.y + current.u.y * current.maxT 
@@ -375,21 +393,24 @@ const mergeCollinearBeams = (polys: DxfEntity[], obstacles: DxfEntity[], maxGap:
                     y: current.center.y + current.u.y * nextStartT 
                 };
 
-                if (isGapBlocked(pEndCurrent, pStartNext, current.halfWidth * 2)) {
-                    continue; // Blocked by wall/column
+                // A. Check Blockers (Always applies)
+                if (isGapBlockedByObstacle(pEndCurrent, pStartNext, current.halfWidth * 2)) continue;
+
+                // B. Check Cross Requirement (Step 2 Only)
+                if (strictCrossOnly && gap > 5) { // Tolerance for effectively touching
+                     if (!isGapCrossed(pEndCurrent, pStartNext, current.halfWidth*2, current.u)) {
+                         // Gap is empty (no crossing beam), so DON'T merge in Step 2
+                         continue;
+                     }
                 }
 
-                // MERGE
                 current = mergeOBBs(current, next);
                 used.add(j);
                 mergedSomething = true;
-                
-                // Restart inner loop to merge recursively with new extended bounds
                 break; 
             }
         }
 
-        // Reconstruct Polyline from OBB
         const { center, u, v, halfWidth, minT, maxT } = current;
         const p1 = { x: center.x + u.x * minT + v.x * halfWidth, y: center.y + u.y * minT + v.y * halfWidth };
         const p2 = { x: center.x + u.x * minT - v.x * halfWidth, y: center.y + u.y * minT - v.y * halfWidth };
@@ -407,18 +428,14 @@ const mergeCollinearBeams = (polys: DxfEntity[], obstacles: DxfEntity[], maxGap:
     return mergedPolys;
 };
 
-// 2. Extend Beams Perpendicularly (Step 2b) - T-Stem Extension
-// PRIORITY 1: Viewport Boundary. Never exceed.
-// PRIORITY 2: Wall/Column. Stop immediately.
-// PRIORITY 3: Beam. Extend to form T-Junction.
+// 2. Extend Beams (Step 2b) - T-Stem Extension
 const extendBeamsToPerpendicular = (
     polys: DxfEntity[], 
     targets: DxfEntity[], 
     blockers: DxfEntity[],
     maxSearchDist: number,
-    viewports: Bounds[] // Strictly enforce these boundaries
+    viewports: Bounds[]
 ): DxfEntity[] => {
-    // Pre-compute bounds
     const blockerBounds = blockers.map(b => getEntityBounds(b)).filter(b => b !== null) as Bounds[];
     const targetOBBs = targets.map(p => computeOBB(p)).filter(o => o !== null) as OBB[];
 
@@ -427,7 +444,6 @@ const extendBeamsToPerpendicular = (
         if (!obb) return poly;
         const { center, u, v, halfWidth, minT, maxT } = obb;
 
-        // Vertices of the beam ends (Left, Center, Right rays)
         const pFrontLeft = { x: center.x + u.x * maxT + v.x * halfWidth, y: center.y + u.y * maxT + v.y * halfWidth };
         const pFrontRight = { x: center.x + u.x * maxT - v.x * halfWidth, y: center.y + u.y * maxT - v.y * halfWidth };
         const pFrontCenter = { x: center.x + u.x * maxT, y: center.y + u.y * maxT };
@@ -436,54 +452,39 @@ const extendBeamsToPerpendicular = (
         const pBackRight = { x: center.x + u.x * minT - v.x * halfWidth, y: center.y + u.y * minT - v.y * halfWidth };
         const pBackCenter = { x: center.x + u.x * minT, y: center.y + u.y * minT };
 
-        // Identify which viewport contains this beam (use Center Point)
         const containingViewport = viewports.find(vp => isPointInBounds(center, vp));
 
         const getSafeExtension = (origins: Point[], dir: Point): number => {
-            // 1. Viewport Hard Limit
             let viewportLimit = Infinity;
             if (containingViewport) {
                 for (const org of origins) {
                     const { tmax } = rayIntersectsAABB(org, dir, containingViewport);
-                    // tmax is distance to exit the viewport in direction 'dir'
-                    // If tmax > 0, that's the remaining space. If < 0, we are outside (should be 0)
                     if (tmax > -1e-3) {
                         viewportLimit = Math.min(viewportLimit, Math.max(0, tmax));
                     } else {
-                        // Origin is outside or on edge pointing out
                         viewportLimit = 0;
                     }
                 }
             }
 
-            // 2. Obstacle Limit
             let barrierDist = viewportLimit;
-
             for (const b of blockerBounds) {
-                // Check all 3 rays to prevent corner penetration
                 for (const org of origins) {
                     const { tmin, tmax } = rayIntersectsAABB(org, dir, b);
-                    // tmax > 0 means the box is "forward" relative to ray (or we are inside it)
                     if (tmax > -1e-3) { 
-                         // If we are inside (tmin < 0), distance is 0.
-                         // If we are outside, distance is tmin.
                          const dist = Math.max(0, tmin);
                          if (dist < barrierDist) barrierDist = dist;
                     }
                 }
             }
 
-            // HIGHEST PRIORITY: If we are touching a wall/column, STOP immediately.
             if (barrierDist < 10) return 0;
 
-            // 3. Beam Target Search
-            // Search limit is restricted by maxSearchDist AND the nearest barrier.
             const searchLimit = Math.min(maxSearchDist, barrierDist);
             let bestExtension = 0;
 
             for (const t of targetOBBs) {
                 if (t.entity === poly) continue;
-                // Check Perpendicularity (Cross/T Logic)
                 if (Math.abs(u.x * t.u.x + u.y * t.u.y) > 0.1) continue; 
 
                 let targetHitMin = Infinity;
@@ -503,21 +504,14 @@ const extendBeamsToPerpendicular = (
                 }
 
                 if (hitCount > 0) {
-                     // We hit a target.
-                     // We want to extend to the far side of the target (targetHitMax) to form a T-junction.
-                     // But we MUST NOT exceed barrierDist.
                      const desired = targetHitMax;
                      if (desired <= barrierDist + 10) { 
-                         // Safe to extend fully across target
                          if (desired > bestExtension) bestExtension = Math.min(desired, barrierDist);
                      } else {
-                         // Target is cut by wall, or overlaps wall. 
-                         // Extend only to wall.
                          if (barrierDist > bestExtension) bestExtension = barrierDist;
                      }
                 }
             }
-            
             return bestExtension;
         };
 
@@ -529,7 +523,6 @@ const extendBeamsToPerpendicular = (
         const newMaxT = maxT + extFront;
         const newMinT = minT - extBack;
         
-        // Reconstruct vertices
         const nP1 = { x: center.x + u.x * newMinT + v.x * halfWidth, y: center.y + u.y * newMinT + v.y * halfWidth };
         const nP2 = { x: center.x + u.x * newMinT - v.x * halfWidth, y: center.y + u.y * newMinT - v.y * halfWidth };
         const nP3 = { x: center.x + u.x * newMaxT - v.x * halfWidth, y: center.y + u.y * newMaxT - v.y * halfWidth };
@@ -558,10 +551,7 @@ export const runBeamRawGeneration = (
     if (!sources) return;
     
     const resultLayer = 'BEAM_STEP1_RAW';
-    
-    // We pass 'validWidths' to finding algorithm to improve accuracy
     const { lines, obstacles, axisLines, textPool, validWidths } = sources;
-    
     const widthsToUse = validWidths.size > 0 ? validWidths : new Set([200, 250, 300, 350, 400, 500, 600]);
 
     const polys = findParallelPolygons(
@@ -580,13 +570,12 @@ export const runBeamRawGeneration = (
         return;
     }
 
-    // NEW STEP: Merge strictly adjacent/touching segments
-    // Requirement: "Start point is end point". We use maxGap=2mm to handle floating point noise.
-    // If strict touching is desired, gap <= 2mm is appropriate for CAD data.
-    const mergedPolys = mergeCollinearBeams(polys, obstacles, 2);
+    // Step 1: Strict merge (gap=2mm) for bad CAD splicing
+    // Pass 'false' for strictCrossOnly because here we just want to join touching segments.
+    const mergedPolys = mergeCollinearBeams(polys, obstacles, [], 2, false);
     
     updateProject(activeProject, setProjects, setLayerColors, resultLayer, mergedPolys, DEFAULT_BEAM_STAGE_COLORS[resultLayer], ['AXIS'], true);
-    console.log(`Step 1: Generated ${mergedPolys.length} raw beam segments (merged from ${polys.length}).`);
+    console.log(`Step 1: Generated ${mergedPolys.length} raw beam segments.`);
 };
 
 
@@ -596,14 +585,13 @@ export const runBeamIntersectionProcessing = (
     setProjects: React.Dispatch<React.SetStateAction<ProjectFile[]>>,
     setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>
 ) => {
-    // 1. Get Sources & Valid Widths
+    // 1. Get Sources
     const sources = collectBeamSources(activeProject, projects);
     if (!sources) return;
 
     const sourceLayer = 'BEAM_STEP1_RAW';
     const resultLayer = 'BEAM_STEP2_GEO';
 
-    // 2. Fetch Step 1 Data (Strict Deep Copy)
     const rawStep1 = activeProject.data.entities.filter(e => e.layer === sourceLayer);
     if (rawStep1.length === 0) {
         alert("Please run Step 1 (Raw Generation) first.");
@@ -612,27 +600,36 @@ export const runBeamIntersectionProcessing = (
     
     const workingSet = deepCopyEntities(rawStep1);
     
-    // 3. Define Valid Widths for Limits
     const validWidthsArr = Array.from(sources.validWidths);
     const maxSearchWidth = validWidthsArr.length > 0 ? Math.max(...validWidthsArr) : 600;
-
-    // 4. Retrieve Strict Viewport Boundaries
-    // These are unexpanded bounds, representing the exact drawing frames.
     const strictViewports = activeProject.splitRegions ? activeProject.splitRegions.map(r => r.bounds) : [];
 
-    console.log(`Step 2: Processing ${workingSet.length} segments. Max Search Dist: ${maxSearchWidth}. Viewports: ${strictViewports.length}`);
-
-    // 5. Merge Collinear/Adjacent (Step 2a) - Handles Cross merging and T-Top merging
-    // Here we DO want to jump gaps (up to maxSearchWidth) to bridge crossing beams.
-    // But we strictly stop at walls/columns (handled by the isGapBlocked check in mergeCollinearBeams).
-    const merged = mergeCollinearBeams(workingSet, sources.obstacles, maxSearchWidth);
+    // --- FILTERING ---
+    // Separate beams that are "fully anchored" (both ends blocked) from those needing processing.
+    const toProcess: DxfEntity[] = [];
+    const completed: DxfEntity[] = [];
     
-    // 6. Extend T-Stems (Step 2b)
-    // Priority: Viewports > Walls/Cols > Beams. 
-    const extended = extendBeamsToPerpendicular(merged, merged, sources.obstacles, maxSearchWidth, strictViewports);
+    workingSet.forEach(b => {
+        if (isBeamFullyAnchored(b, sources.obstacles)) {
+            completed.push(b);
+        } else {
+            toProcess.push(b);
+        }
+    });
 
-    // 7. Final cleanup (assign layer)
-    const finalEntities = extended.map(e => ({ ...e, layer: resultLayer }));
+    console.log(`Step 2: Processing ${toProcess.length} segments (${completed.length} skipped as fully anchored).`);
+
+    // 5. Merge Collinear (Step 2 Only)
+    // STRICT CROSS ONLY: Only merge if gap is traversed by another beam.
+    const merged = mergeCollinearBeams(toProcess, sources.obstacles, workingSet, maxSearchWidth, true);
+    
+    // 6. Extend T-Stems
+    // Extend only the processed ones (plus merged results) against ALL targets (including completed ones)
+    const allTargets = [...merged, ...completed];
+    const extended = extendBeamsToPerpendicular(merged, allTargets, sources.obstacles, maxSearchWidth, strictViewports);
+
+    // 7. Combine
+    const finalEntities = [...extended, ...completed].map(e => ({ ...e, layer: resultLayer }));
 
     updateProject(activeProject, setProjects, setLayerColors, resultLayer, finalEntities, DEFAULT_BEAM_STAGE_COLORS[resultLayer], ['AXIS', 'COLU_CALC', 'WALL_CALC'], true, undefined, [sourceLayer]);
     console.log(`Step 2: Processed intersections. Result: ${finalEntities.length} segments.`);
@@ -645,8 +642,7 @@ export const runBeamAttributeMounting = (
     setProjects: React.Dispatch<React.SetStateAction<ProjectFile[]>>,
     setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>
 ) => {
-    // Placeholder for Step 3
-    console.log("Step 3: Attribute Mounting (Logic preserved in pipeline structure)");
+    console.log("Step 3: Attribute Mounting");
 };
 
 export const runBeamTopologyMerge = (
@@ -655,7 +651,6 @@ export const runBeamTopologyMerge = (
     setProjects: React.Dispatch<React.SetStateAction<ProjectFile[]>>,
     setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>
 ) => {
-     // Placeholder for Step 4
      console.log("Step 4: Topology Merge");
 };
 
@@ -665,6 +660,5 @@ export const runBeamPropagation = (
     setProjects: React.Dispatch<React.SetStateAction<ProjectFile[]>>,
     setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>
 ) => {
-    // Placeholder for Step 5
     console.log("Step 5: Propagation");
 };
