@@ -1,3 +1,4 @@
+
 import React from 'react';
 import { DxfEntity, EntityType, Point, Bounds, ProjectFile } from '../types';
 import { extractEntities } from '../utils/dxfHelpers';
@@ -7,7 +8,7 @@ import {
     getCenter,
     getEntityBounds,
     distance,
-    boundsOverlap,
+    boundsOverlap as boundsOverlapGeo,
     findParallelPolygons
 } from '../utils/geometryUtils';
 
@@ -26,7 +27,7 @@ const BEAM_LAYER_CANDIDATES = ['BEAM', 'BEAM_CON'];
 const DEFAULT_BEAM_STAGE_COLORS: Record<string, string> = {
     BEAM_STEP1_RAW: '#10b981',      // Green
     BEAM_STEP2_GEO: '#06b6d4',      // Cyan
-    BEAM_STEP2_INTER_SECTION: '#0ea5e9', // Light blue for cross intersections
+    BEAM_STEP2_INTER_SECTION: '#f97316', // Orange-500 for high visibility
     BEAM_STEP3_ATTR: '#f59e0b',     // Amber
     BEAM_STEP4_LOGIC: '#8b5cf6',    // Violet
     BEAM_STEP5_PROP: '#ec4899',     // Pink
@@ -319,7 +320,7 @@ const mergeCollinearBeams = (
         };
 
         for (const obs of obsBounds) {
-            if (boundsOverlap(gapBounds, obs)) return true;
+            if (boundsOverlapGeo(gapBounds, obs)) return true;
         }
         return false;
     };
@@ -427,225 +428,6 @@ const mergeCollinearBeams = (
     }
 
     return mergedPolys;
-};
-
-/**
- * Common merge function.
- * @param strictCrossOnly If true, only merges if the gap is crossed by another beam (for Step 2).
- */
-type IntersectionShape = 'CROSS' | 'T' | 'L';
-
-const mergeCrossBeams = (
-    polys: DxfEntity[],
-    obstacles: DxfEntity[],
-    allBeams: DxfEntity[],
-    validWidths: Set<number>
-): { beams: DxfEntity[], intersections: DxfEntity[], labels: DxfEntity[] } => {
-    const items = polys.map((p, idx) => {
-        const obb = computeOBB(p);
-        return { poly: p, obb, idx };
-    }).filter(i => i.obb !== null) as { poly: DxfEntity, obb: OBB, idx: number }[];
-    console.log('mergeCrossBeams init', { polys: polys.length, items: items.length });
-
-    const obsBounds = obstacles.map(o => getEntityBounds(o)).filter(b => b !== null) as Bounds[];
-    const beamBounds = allBeams
-        .map((b, idx) => ({ idx, bounds: getEntityBounds(b) }))
-        .filter(b => b.bounds !== null) as { idx: number, bounds: Bounds }[];
-    console.log('mergeCrossBeams bounds', { obsBounds: obsBounds.length, beamBounds: beamBounds.length, validWidths: Array.from(validWidths) });
-
-    const blockHitSamples: any[] = [];
-    const isBlocked = (pt: Point, selfIdx?: number, includeBeams: boolean = false): boolean => {
-        for (const [idx, b] of obsBounds.entries()) {
-            if (pt.x >= b.minX - 5 && pt.x <= b.maxX + 5 && pt.y >= b.minY - 5 && pt.y <= b.maxY + 5) {
-                if (blockHitSamples.length < 10) blockHitSamples.push({ type: 'obstacle', idx, pt });
-                return true;
-            }
-        }
-        if (!includeBeams) return false;
-        for (const bb of beamBounds) {
-            if (selfIdx !== undefined && bb.idx === selfIdx) continue;
-            const b = bb.bounds;
-            if (pt.x >= b.minX - 5 && pt.x <= b.maxX + 5 && pt.y >= b.minY - 5 && pt.y <= b.maxY + 5) {
-                if (blockHitSamples.length < 10) blockHitSamples.push({ type: 'beam', hit: bb.idx, self: selfIdx ?? null, pt });
-                return true;
-            }
-        }
-        return false;
-    };
-
-    const canTravel = (start: Point, dir: Point, dist: number, ignore: Set<number>): boolean => {
-        for (const b of obsBounds) {
-            const { tmin, tmax } = rayIntersectsAABB(start, dir, b);
-            if (tmax > -1e-6 && tmin < dist + 1e-3) return false;
-        }
-        for (const bb of beamBounds) {
-            if (ignore.has(bb.idx)) continue;
-            const b = bb.bounds;
-            const { tmin, tmax } = rayIntersectsAABB(start, dir, b);
-            if (tmax > -1e-6 && tmin < dist + 1e-3) return false;
-        }
-        return true;
-    };
-
-    const chooseWidth = (gap: number, preferred: number | null): number | null => {
-        if (preferred !== null && preferred >= gap - 1e-3) return preferred;
-        return null;
-    };
-
-    const makeRect = (center: Point, u: Point, v: Point, halfU: number, halfV: number, layer: string): DxfEntity => {
-        const p1 = { x: center.x + u.x * halfU + v.x * halfV, y: center.y + u.y * halfU + v.y * halfV };
-        const p2 = { x: center.x - u.x * halfU + v.x * halfV, y: center.y - u.y * halfU + v.y * halfV };
-        const p3 = { x: center.x - u.x * halfU - v.x * halfV, y: center.y - u.y * halfU - v.y * halfV };
-        const p4 = { x: center.x + u.x * halfU - v.x * halfV, y: center.y + u.y * halfU - v.y * halfV };
-        return { type: EntityType.LWPOLYLINE, layer, closed: true, vertices: [p1, p2, p3, p4] };
-    };
-
-    const extensions = new Map<number, { minT: number, maxT: number }>();
-    const intersections: DxfEntity[] = [];
-    const labels: DxfEntity[] = [];
-    const seen = new Set<string>();
-    const pairStats = {
-        pairsChecked: 0,
-        skipNoDir: 0,
-        skipNoWidth: 0,
-        skipGapTooBig: 0,
-        skipTravelH: 0,
-        skipTravelV: 0,
-        added: 0
-    };
-
-    const endBlocks = new Map<number, { front: boolean, back: boolean }>();
-    let blockedBoth = 0;
-    let blockedFrontOnly = 0;
-    let blockedBackOnly = 0;
-    let freeBoth = 0;
-    items.forEach(info => {
-        const { center, u, minT, maxT } = info.obb;
-        const front = { x: center.x + u.x * maxT, y: center.y + u.y * maxT };
-        const back = { x: center.x + u.x * minT, y: center.y + u.y * minT };
-        // Only treat walls/columns as blockers for end-free check; beams are ignored here to allow crossings
-        const frontBlocked = isBlocked(front, info.idx, false);
-        const backBlocked = isBlocked(back, info.idx, false);
-        if (items.length <= 10) {
-            console.log('endBlocks detail', { idx: info.idx, front, back, frontBlocked, backBlocked, minT, maxT, center });
-        }
-        if (frontBlocked && backBlocked) blockedBoth++;
-        else if (frontBlocked) blockedFrontOnly++;
-        else if (backBlocked) blockedBackOnly++;
-        else freeBoth++;
-        endBlocks.set(info.idx, { front: frontBlocked, back: backBlocked });
-    });
-
-    // Allow beams with at least one free end; fully anchored beams stay out
-    const extendable = items.filter(info => {
-        const ends = endBlocks.get(info.idx);
-        return ends ? !(ends.front && ends.back) : true;
-    });
-
-    const horizontal = extendable.filter(c => Math.abs(c.obb.u.x) >= Math.abs(c.obb.u.y));
-    const vertical = extendable.filter(c => Math.abs(c.obb.u.x) < Math.abs(c.obb.u.y));
-    console.log('mergeCrossBeams stats', {
-        total: items.length,
-        obstacles: obsBounds.length,
-        beamBounds: beamBounds.length,
-        extendable: extendable.length,
-        horizontal: horizontal.length,
-        vertical: vertical.length,
-        blockedBoth,
-        blockedFrontOnly,
-        blockedBackOnly,
-        freeBoth,
-        sampleEnds: endBlocks,
-        blockHitSamples
-    });
-
-    horizontal.forEach(h => {
-        vertical.forEach(v => {
-            pairStats.pairsChecked++;
-            const inter: Point = { x: v.obb.center.x, y: h.obb.center.y };
-            const projH = (inter.x - h.obb.center.x) * h.obb.u.x + (inter.y - h.obb.center.y) * h.obb.u.y;
-            const projV = (inter.x - v.obb.center.x) * v.obb.u.x + (inter.y - v.obb.center.y) * v.obb.u.y;
-
-            let gapH = 0;
-            let dirH: Point | null = null;
-            const hEnds = endBlocks.get(h.idx);
-            if (projH > h.obb.maxT) {
-                if (!hEnds?.front) { gapH = projH - h.obb.maxT; dirH = h.obb.u; }
-            } else if (projH < h.obb.minT) {
-                if (!hEnds?.back) { gapH = h.obb.minT - projH; dirH = { x: -h.obb.u.x, y: -h.obb.u.y }; }
-            }
-
-            let gapV = 0;
-            let dirV: Point | null = null;
-            const vEnds = endBlocks.get(v.idx);
-            if (projV > v.obb.maxT) {
-                if (!vEnds?.front) { gapV = projV - v.obb.maxT; dirV = v.obb.u; }
-            } else if (projV < v.obb.minT) {
-                if (!vEnds?.back) { gapV = v.obb.minT - projV; dirV = { x: -v.obb.u.x, y: -v.obb.u.y }; }
-            }
-
-            const widthH = h.obb.halfWidth * 2;
-            const widthV = v.obb.halfWidth * 2;
-            const limitH = chooseWidth(gapH, widthV || null);
-            const limitV = chooseWidth(gapV, widthH || null);
-
-            if ((!dirH && !dirV)) { pairStats.skipNoDir++; console.log('gapH/gapV2', { reason: 'noDir', hId: h.idx, vId: v.idx, gapH, gapV }); return; }
-            if (limitH === null || limitV === null) { pairStats.skipNoWidth++; console.log('gapH/gapV2', { reason: 'noWidth', hId: h.idx, vId: v.idx, gapH, gapV, widthH, widthV }); return; }
-            if (gapH > limitH + 1e-3 || gapV > limitV + 1e-3) { pairStats.skipGapTooBig++; console.log('gapH/gapV2', { reason: 'gapTooBig', hId: h.idx, vId: v.idx, gapH, gapV, limitH, limitV }); return; }
-
-            if (dirH) {
-                const startH = { x: h.obb.center.x + h.obb.u.x * (projH > h.obb.maxT ? h.obb.maxT : h.obb.minT), y: h.obb.center.y + h.obb.u.y * (projH > h.obb.maxT ? h.obb.maxT : h.obb.minT) };
-                if (!canTravel(startH, dirH, gapH, new Set([h.idx, v.idx]))) { pairStats.skipTravelH++; return; }
-            }
-            if (dirV) {
-                const startV = { x: v.obb.center.x + v.obb.u.x * (projV > v.obb.maxT ? v.obb.maxT : v.obb.minT), y: v.obb.center.y + v.obb.u.y * (projV > v.obb.maxT ? v.obb.maxT : v.obb.minT) };
-                if (!canTravel(startV, dirV, gapV, new Set([h.idx, v.idx]))) { pairStats.skipTravelV++; return; }
-            }
-
-            const pushRange = (id: number, t: number) => {
-                const ex = extensions.get(id);
-                if (!ex) extensions.set(id, { minT: t, maxT: t });
-                else {
-                    ex.minT = Math.min(ex.minT, t);
-                    ex.maxT = Math.max(ex.maxT, t);
-                }
-            };
-            pushRange(h.idx, projH);
-            pushRange(v.idx, projV);
-
-            const key = `${Math.round(inter.x)}-${Math.round(inter.y)}-${Math.round(widthH)}-${Math.round(widthV)}`;
-            if (!seen.has(key)) {
-                seen.add(key);
-                const shape: IntersectionShape =
-                    gapH > 0 && gapV > 0 ? 'CROSS' :
-                        (gapH === 0 && gapV === 0 ? 'CROSS' : 'T');
-
-                const rect = makeRect(inter, h.obb.u, v.obb.u, widthH / 2, widthV / 2, 'BEAM_STEP2_INTER_SECTION');
-                intersections.push(rect);
-                pairStats.added++;
-                labels.push({
-                    type: EntityType.TEXT,
-                    layer: 'BEAM_STEP2_INTER_SECTION',
-                    start: inter,
-                    text: shape,
-                    radius: Math.max(widthH, widthV) * 0.6,
-                    startAngle: 0
-                });
-            }
-        });
-    });
-
-    const beams: DxfEntity[] = items.map(item => {
-        const ext = extensions.get(item.idx);
-        const minT = ext ? Math.min(item.obb.minT, ext.minT) : item.obb.minT;
-        const maxT = ext ? Math.max(item.obb.maxT, ext.maxT) : item.obb.maxT;
-        const newCenter = { x: item.obb.center.x + item.obb.u.x * ((minT + maxT) / 2), y: item.obb.center.y + item.obb.u.y * ((minT + maxT) / 2) };
-        return makeRect(newCenter, item.obb.u, item.obb.v, (maxT - minT) / 2, item.obb.halfWidth, item.poly.layer);
-    });
-
-    console.log('mergeCrossBeams pairStats', pairStats);
-
-    return { beams, intersections, labels };
 };
 
 // 2. Extend Beams (Step 2b) - T-Stem Extension
@@ -757,98 +539,116 @@ const extendBeamsToPerpendicular = (
     });
 };
 
-// --- SIMPLE INTERSECTION DETECTION ---
+// --- INTERSECTION DETECTION (Topological Arm Counting) ---
 
-const getOrientationSimple = (obb: OBB): 'H' | 'V' => {
-    return Math.abs(obb.u.x) >= Math.abs(obb.u.y) ? 'H' : 'V';
-};
+type IntersectionShape = 'C' | 'T' | 'L';
 
 const detectIntersections = (beams: DxfEntity[]): { intersections: DxfEntity[], labels: DxfEntity[] } => {
+    // 1. Compute OBBs
     const obbs = beams.map(b => ({ obb: computeOBB(b), beam: b }));
     const boundsList = beams.map(b => getEntityBounds(b));
-    const clusters = new Map<string, { bounds: Bounds, beams: Set<number>, shapes: IntersectionShape[] }>();
-    let counter = 1;
+    
+    // 2. Cluster Intersections
+    // Key: center coordinates (quantized) to merge overlapping intersection zones
+    const clusters = new Map<string, { bounds: Bounds, beams: Set<number> }>();
+    
+    // Helper to merge bounds
+    const mergeBounds = (a: Bounds, b: Bounds): Bounds => ({
+        minX: Math.min(a.minX, b.minX),
+        minY: Math.min(a.minY, b.minY),
+        maxX: Math.max(a.maxX, b.maxX),
+        maxY: Math.max(a.maxY, b.maxY)
+    });
 
     const overlapBounds = (a: Bounds, b: Bounds): Bounds | null => {
         const minX = Math.max(a.minX, b.minX);
         const maxX = Math.min(a.maxX, b.maxX);
         const minY = Math.max(a.minY, b.minY);
         const maxY = Math.min(a.maxY, b.maxY);
-        if (minX < maxX && minY < maxY) {
-            const area = (maxX - minX) * (maxY - minY);
-            if (area < 50) return null; // filter tiny overlaps
-            return { minX, minY, maxX, maxY };
+        if (minX < maxX - 10 && minY < maxY - 10) { // Tolerance 10mm
+             return { minX, minY, maxX, maxY };
         }
         return null;
-    };
-
-    const classify = (obbA: OBB, obbB: OBB, center: Point): IntersectionShape => {
-        const oriA = getOrientationSimple(obbA);
-        const oriB = getOrientationSimple(obbB);
-        if (oriA === oriB) return 'T';
-        const project = (obb: OBB, c: Point) => {
-            const t = (c.x - obb.center.x) * obb.u.x + (c.y - obb.center.y) * obb.u.y;
-            const atEnd = Math.min(Math.abs(t - obb.minT), Math.abs(t - obb.maxT)) < obb.halfWidth * 0.8;
-            return { atEnd };
-        };
-        const pa = project(obbA, center);
-        const pb = project(obbB, center);
-        if (pa.atEnd && pb.atEnd) return 'L';
-        if (pa.atEnd || pb.atEnd) return 'T';
-        return 'CROSS';
     };
 
     for (let i = 0; i < obbs.length; i++) {
         const obbA = obbs[i].obb;
         const bA = boundsList[i];
         if (!obbA || !bA) continue;
+        const oriA = Math.abs(obbA.u.x) >= Math.abs(obbA.u.y) ? 'H' : 'V';
+
         for (let j = i + 1; j < obbs.length; j++) {
             const obbB = obbs[j].obb;
             const bB = boundsList[j];
             if (!obbB || !bB) continue;
-            // only consider perpendicular overlaps for intersection marking
-            const oriA = getOrientationSimple(obbA);
-            const oriB = getOrientationSimple(obbB);
+            
+            const oriB = Math.abs(obbB.u.x) >= Math.abs(obbB.u.y) ? 'H' : 'V';
+            
+            // Only consider perpendicular intersections for Cross/T/L
             if (oriA === oriB) continue;
+
             const overlap = overlapBounds(bA, bB);
             if (!overlap) continue;
-            const center = { x: (overlap.minX + overlap.maxX) / 2, y: (overlap.minY + overlap.maxY) / 2 };
-            const shape = classify(obbA, obbB, center);
-            const key = `${Math.round(center.x)}-${Math.round(center.y)}`;
+            
+            // Found an intersection. Find or create cluster.
+            // Simple clustering by center distance
+            const cx = (overlap.minX + overlap.maxX)/2;
+            const cy = (overlap.minY + overlap.maxY)/2;
+            const key = `${Math.round(cx/200)}_${Math.round(cy/200)}`; // 200mm grid for clustering proximity
+            
             if (!clusters.has(key)) {
-                clusters.set(key, { bounds: overlap, beams: new Set<number>([i, j]), shapes: [shape] });
+                clusters.set(key, { bounds: overlap, beams: new Set([i, j]) });
             } else {
                 const c = clusters.get(key)!;
-                c.beams.add(i); c.beams.add(j);
-                c.shapes.push(shape);
-                c.bounds = {
-                    minX: Math.min(c.bounds.minX, overlap.minX),
-                    minY: Math.min(c.bounds.minY, overlap.minY),
-                    maxX: Math.max(c.bounds.maxX, overlap.maxX),
-                    maxY: Math.max(c.bounds.maxY, overlap.maxY)
-                };
+                c.bounds = mergeBounds(c.bounds, overlap);
+                c.beams.add(i);
+                c.beams.add(j);
             }
         }
     }
 
+    // 3. Classify Shapes
     const intersections: DxfEntity[] = [];
     const labels: DxfEntity[] = [];
+    let counter = 1;
 
     clusters.forEach((val) => {
-        const oriCounts = { H: 0, V: 0 };
+        // Classify based on topological arms
+        const dirs = { right: false, up: false, left: false, down: false };
+        const center = { x: (val.bounds.minX + val.bounds.maxX)/2, y: (val.bounds.minY + val.bounds.maxY)/2 };
+        const tol = 150; // Distance tolerance to consider a beam extending out
+
         val.beams.forEach(idx => {
-            const obb = obbs[idx].obb;
+            const { obb } = obbs[idx];
             if (!obb) return;
-            const ori = getOrientationSimple(obb);
-            if (ori === 'H') oriCounts.H++; else oriCounts.V++;
+            // Check endpoints of beam
+            const p1 = { x: obb.center.x + obb.u.x * obb.maxT, y: obb.center.y + obb.u.y * obb.maxT };
+            const p2 = { x: obb.center.x + obb.u.x * obb.minT, y: obb.center.y + obb.u.y * obb.minT };
+
+            // Function to check direction
+            const check = (p: Point) => {
+                const dx = p.x - center.x;
+                const dy = p.y - center.y;
+                // If endpoint is within intersection bounds (or close), it does not extend.
+                if (Math.abs(dx) < (val.bounds.maxX - val.bounds.minX)/2 + tol && 
+                    Math.abs(dy) < (val.bounds.maxY - val.bounds.minY)/2 + tol) return;
+
+                if (Math.abs(dx) > Math.abs(dy)) {
+                    if (dx > 0) dirs.right = true; else dirs.left = true;
+                } else {
+                    if (dy > 0) dirs.up = true; else dirs.down = true;
+                }
+            };
+            check(p1);
+            check(p2);
         });
-        let shape: IntersectionShape = 'T';
-        if (oriCounts.H >= 1 && oriCounts.V >= 1 && val.beams.size >= 4) {
-            shape = 'CROSS';
-        } else {
-            // fallback to most severe shape in this cluster
-            shape = val.shapes.includes('CROSS') ? 'CROSS' : (val.shapes.includes('T') ? 'T' : 'L');
-        }
+
+        const arms = (dirs.right?1:0) + (dirs.left?1:0) + (dirs.up?1:0) + (dirs.down?1:0);
+        let shape: IntersectionShape = 'L';
+        if (arms === 4) shape = 'C';
+        else if (arms === 3) shape = 'T';
+        
+        // Refined visual box (use the computed bounds)
         const rect: DxfEntity = {
             type: EntityType.LWPOLYLINE,
             layer: 'BEAM_STEP2_INTER_SECTION',
@@ -861,16 +661,15 @@ const detectIntersections = (beams: DxfEntity[]): { intersections: DxfEntity[], 
             ]
         };
         intersections.push(rect);
-        const center = { x: (val.bounds.minX + val.bounds.maxX) / 2, y: (val.bounds.minY + val.bounds.maxY) / 2 };
+
         labels.push({
             type: EntityType.TEXT,
             layer: 'BEAM_STEP2_INTER_SECTION',
             start: center,
-            text: `${shape[0]}-${counter}`,
-            radius: 240,
+            text: `${shape}-${counter++}`,
+            radius: 250,
             startAngle: 0
         });
-        counter++;
     });
 
     return { intersections, labels };
@@ -886,25 +685,25 @@ const mergeOverlappingBeams = (beams: DxfEntity[]): DxfEntity[] => {
         const projCenter = (pt: Point) => (pt.x - a.center.x) * u.x + (pt.y - a.center.y) * u.y;
         const minA = a.minT;
         const maxA = a.maxT;
-        const relCenterB = projCenter(b.center);
-        const minB = relCenterB + b.minT;
-        const maxB = relCenterB + b.maxT;
+        const centerRel = projCenter(b.center); // Fixed: was relCenterB
+        const minB = centerRel + b.minT;
+        const maxB = centerRel + b.maxT;
+
         const newMin = Math.min(minA, minB);
         const newMax = Math.max(maxA, maxB);
         const newLen = newMax - newMin;
+        const newCenterU = newMin + newLen / 2;
+
         const center = {
-            x: a.center.x + u.x * (newMin + newLen / 2),
-            y: a.center.y + u.y * (newMin + newLen / 2)
+            x: a.center.x + u.x * newCenterU,
+            y: a.center.y + u.y * newCenterU
         };
+
         const halfWidth = Math.max(a.halfWidth, b.halfWidth);
+
         return {
-            center,
-            u,
-            v: a.v,
-            halfWidth,
-            halfLen: newLen / 2,
-            minT: -newLen / 2,
-            maxT: newLen / 2,
+            center, u, v: a.v, halfWidth,
+            halfLen: newLen / 2, minT: -newLen / 2, maxT: newLen / 2,
             entity: a.entity
         };
     };
@@ -928,7 +727,7 @@ const mergeOverlappingBeams = (beams: DxfEntity[]): DxfEntity[] => {
 
                 const bA = getEntityBounds(current.entity);
                 const bB = getEntityBounds(other.entity);
-                if (!bA || !bB || !boundsOverlap(bA, bB)) continue;
+                if (!bA || !bB || !boundsOverlapGeo(bA, bB)) continue;
 
                 current = mergeOBBs(current, other);
                 used.add(j);
