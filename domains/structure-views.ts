@@ -365,6 +365,100 @@ export const runMergeViews = (
     return;
   }
 
+  const buildBeamLabelInfos = (): import('../types').BeamLabelInfo[] => {
+    const infos: import('../types').BeamLabelInfo[] = [];
+    const targetLayers = [RESULT_LAYER_H, RESULT_LAYER_V];
+
+    targetLayers.forEach(layer => {
+      const ents = mergedByLayer[layer] || [];
+      const texts = ents.filter(e => (e.type === EntityType.TEXT || e.type === EntityType.ATTRIB) && e.start);
+      const leaders = ents.filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
+
+      texts.forEach((txt, idx) => {
+        if (!txt.start) return;
+        const rot = txt.rotation !== undefined ? txt.rotation : (txt.startAngle || 0);
+        const angNorm = normalizeAngle(rot) % 180;
+        const vert = isVerticalAngle(angNorm);
+        const basePoint: Point = (vert && txt.end) ? txt.end : (txt.start as Point);
+
+        let bestSeg: { start: Point; end: Point } | null = null;
+        let bestDist = Infinity;
+
+        const considerSegment = (a: Point, b: Point) => {
+          const d = distancePointToSegment(basePoint, a, b);
+          if (d < bestDist) {
+            bestDist = d;
+            bestSeg = { start: a, end: b };
+          }
+        };
+
+        leaders.forEach(l => {
+          if (l.type === EntityType.LINE && l.start && l.end) {
+            considerSegment(l.start, l.end);
+          } else if (l.type === EntityType.LWPOLYLINE && l.vertices && l.vertices.length > 1) {
+            for (let i = 0; i < l.vertices.length - 1; i++) {
+              const a = l.vertices[i];
+              const b = l.vertices[i + 1];
+              if (a && b) considerSegment(a, b);
+            }
+          }
+        });
+
+        if (!bestSeg) return;
+        // Order endpoints relative to basePoint
+        let leaderStart = bestSeg.start;
+        let leaderEnd = bestSeg.end;
+        const dStart = dist(basePoint, bestSeg.start);
+        const dEnd = dist(basePoint, bestSeg.end);
+        if (dEnd < dStart) {
+          leaderStart = bestSeg.end;
+          leaderEnd = bestSeg.start;
+        }
+        const bestAngle = (Math.atan2(leaderEnd.y - leaderStart.y, leaderEnd.x - leaderStart.x) * 180) / Math.PI;
+
+        const firstLine = (txt.text || '').split(/\r?\n/)[0]?.trim() || '';
+        const richMatch = firstLine.match(/^([A-Z0-9\-]+)\(([^)]+)\)\s+(\d+)[xX*��](\d+)/i);
+        const simpleDimMatch = firstLine.match(/^([A-Z0-9\-]+)\s+(\d+)[xX*��](\d+)/i);
+        const codeSpanMatch = firstLine.match(/^([A-Z0-9\-]+)\(([^)]+)\)/i);
+        const codeOnlyMatch = firstLine.match(/^([A-Z0-9\-]+)$/i);
+
+        let parsed: { code: string; span: string | null; width?: number; height?: number } | undefined = undefined;
+        if (richMatch) {
+          parsed = {
+            code: richMatch[1],
+            span: richMatch[2],
+            width: parseInt(richMatch[3]),
+            height: parseInt(richMatch[4])
+          };
+        } else if (simpleDimMatch) {
+          parsed = {
+            code: simpleDimMatch[1],
+            span: null,
+            width: parseInt(simpleDimMatch[2]),
+            height: parseInt(simpleDimMatch[3])
+          };
+        } else if (codeSpanMatch) {
+          parsed = { code: codeSpanMatch[1], span: codeSpanMatch[2] };
+        } else if (codeOnlyMatch) {
+          parsed = { code: codeOnlyMatch[1], span: null };
+        }
+
+        infos.push({
+          id: `${layer}-${idx}`,
+          sourceLayer: layer,
+          orientation: bestAngle,
+          textRaw: txt.text || '',
+          textInsert: txt.start || null,
+          leaderStart,
+          leaderEnd,
+          parsed
+        });
+      });
+    });
+
+    return infos;
+  };
+
   const layersAdded = Object.keys(mergedByLayer);
   if (layersAdded.length === 0) {
     console.log('No eligible label layers with leaders to merge.');
@@ -387,6 +481,7 @@ export const runMergeViews = (
           ...layersAdded,
           ...p.data.layers.filter(l => !layersAddedSet.has(l))
         ];
+        const beamLabels = buildBeamLabelInfos();
         const updatedData = {
           ...p.data,
           entities: [...p.data.entities, ...mergedEntities],
@@ -396,7 +491,7 @@ export const runMergeViews = (
         const activeLayers = new Set(p.activeLayers);
         layersAdded.forEach(l => activeLayers.add(l));
 
-        return { ...p, data: updatedData, activeLayers };
+        return { ...p, data: updatedData, activeLayers, beamLabels };
       }
       return p;
     })

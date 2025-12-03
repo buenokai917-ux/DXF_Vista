@@ -80,6 +80,26 @@ export interface ViewportRegion {
   info: { prefix: string, index: number } | null;
 }
 
+export type LabelOrientation = number | null; // angle in degrees, null if unknown
+
+export interface BeamLabelInfo {
+  id: string;
+  sourceLayer: string;
+  orientation: LabelOrientation;
+  textRaw: string;
+  textInsert: Point | null;
+  leaderStart: Point | null;
+  leaderEnd: Point | null;
+  parsed?: { code: string; span: string | null; width?: number; height?: number };
+  hit?: {
+    startHits?: number[];
+    endHits?: number[];
+    status?: 'start' | 'end' | 'both' | 'conflict' | 'none';
+    chosen?: number;
+  };
+  notes?: string;
+}
+
 export type LayerColors = { [key: string]: string };
 
 export type AnalysisDomain = 'STRUCTURE' | 'LANDSCAPE' | 'ELECTRICAL';
@@ -91,4 +111,5 @@ export interface ProjectFile {
   activeLayers: Set<string>;
   filledLayers: Set<string>;
   splitRegions: ViewportRegion[] | null;
+  beamLabels?: BeamLabelInfo[];
 }

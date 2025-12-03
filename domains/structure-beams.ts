@@ -52,16 +52,8 @@ const collectBeamSources = (
 
     const baseBounds = getMergeBaseBounds(activeProject, 2500);
 
-    // 1. Find Annotation Layers
-    const beamTextLayers = activeProject.data.layers.filter(l => {
-        const u = l.toUpperCase();
-        if (u.endsWith('_CALC')) return false;
-        if (/^Z.*梁/i.test(u)) return true;
-        if (u.includes('标注') && u.includes('梁')) return true;
-        if (u.includes('DIM') && u.includes('BEAM')) return true;
-        if (u === 'MERGE_LABEL') return true;
-        return false;
-    });
+    // 1. Find Annotation Layers (only merged label layers)
+    const beamTextLayers = activeProject.data.layers.filter(l => l === 'MERGE_LABEL_H' || l === 'MERGE_LABEL_V');
 
     const beamLayers = BEAM_LAYER_CANDIDATES;
 
@@ -77,7 +69,7 @@ const collectBeamSources = (
     const rawAxis = extractEntities(axisLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
     const axisLines = filterEntitiesInBounds(rawAxis, baseBounds);
 
-    // 2. Obstacles (Walls and Columns)
+            // 2. Obstacles (Walls and Columns)
     let walls: DxfEntity[] = [];
     const wallCalcLayer = activeProject.data.layers.find(l => l === 'WALL_CALC');
     if (wallCalcLayer) {
@@ -110,12 +102,12 @@ const collectBeamSources = (
     const validWidths = new Set<number>();
     textEntities.forEach(t => {
         if (!t.text) return;
-        const matches = t.text.match(/^.+\s+(\d+)[xX×]\d+/);
+        const matches = t.text.match(/^.+\s+(\d+)[xX脳]\d+/);
         if (matches) {
             const w = parseInt(matches[1], 10);
             if (!isNaN(w) && w >= 100 && w <= 2000) validWidths.add(w);
         } else {
-            const simpleMatch = t.text.match(/^(\d+)[xX×]\d+$/);
+            const simpleMatch = t.text.match(/^(\d+)[xX脳]\d+$/);
             if (simpleMatch) {
                 const w = parseInt(simpleMatch[1], 10);
                 if (!isNaN(w) && w >= 100 && w <= 2000) validWidths.add(w);
@@ -767,6 +759,7 @@ export const runBeamRawGeneration = (
     const resultLayer = 'BEAM_STEP1_RAW';
     const { lines, obstacles, axisLines, textPool, validWidths } = sources;
     const widthsToUse = validWidths.size > 0 ? validWidths : new Set([200, 250, 300, 350, 400, 500, 600]);
+    console.log('Beam availableWidth:', Array.from(widthsToUse).sort((a, b) => a - b));
 
     const polys = findParallelPolygons(
         lines,
@@ -904,6 +897,7 @@ export const runBeamIntersectionProcessing = (
 // Extended interface to hold attributes during processing
 interface BeamAttributes {
     code: string; // e.g., KL1
+    span?: string | null;
     width: number;
     height: number;
     rawLabel: string;
@@ -917,8 +911,9 @@ export const runBeamAttributeMounting = (
     setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>
 ) => {
     const sourceLayer = 'BEAM_STEP2_GEO';
-    const labelSourceLayer = 'MERGE_LABEL';
     const resultLayer = 'BEAM_STEP3_ATTR';
+    const debugLayer = 'BEAM_STEP3_TARGET_DEBUG';
+    const beamLabels = activeProject.beamLabels || [];
 
     const beams = extractEntities([sourceLayer], activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
         .filter(e => e.type !== EntityType.TEXT);
@@ -930,13 +925,9 @@ export const runBeamAttributeMounting = (
     // 1. Deep Copy Beams to New Layer
     const attrBeams = JSON.parse(JSON.stringify(beams)) as DxfEntity[];
     attrBeams.forEach(b => b.layer = resultLayer);
+    const debugMarks: DxfEntity[] = [];
 
-    // 2. Extract Labels and Leaders
-    const labelEntities = extractEntities([labelSourceLayer], activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
-    const textEntities = labelEntities.filter(e => e.type === EntityType.TEXT);
-    const lineEntities = labelEntities.filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
-
-    // 3. Map to OBBs for Hit Testing
+    // 2. Map to OBBs for Hit Testing
     const beamObbs = attrBeams
         .map((b, i) => ({ obb: computeOBB(b), index: i, attr: null as BeamAttributes | null, label: null as DxfEntity | null }))
         .filter(b => b.obb !== null);
@@ -949,67 +940,61 @@ export const runBeamAttributeMounting = (
         return Math.abs(du) <= obb.halfLen + 20 && Math.abs(dv) <= obb.halfWidth + 20;
     };
 
-    // 4. Match Logic
+    const findBeamForPoint = (pt: Point | null): typeof beamObbs[number] | null => {
+        if (!pt) return null;
+        return beamObbs.find(item => {
+            const obb = item.obb!;
+            return isPointInOBB(pt, obb);
+        }) || null;
+    };
+
+    const markDebug = (pt: Point | null, text: string, angle?: number | null) => {
+        if (!pt) return;
+        debugMarks.push({
+            type: EntityType.TEXT,
+            layer: debugLayer,
+            start: pt,
+            text,
+            radius: 120,
+            startAngle: angle ?? 0
+        });
+    };
+
+    // 3. Match Logic
     let matchCount = 0;
 
-    textEntities.forEach(txt => {
-        if (!txt.text || !txt.start) return;
-        const firstLine = (txt.text.split(/\r?\n/)[0] || '').trim();
-        if (!firstLine) return;
+    beamLabels.forEach(lbl => {
+        const leaderAnchor = lbl.leaderStart;
+        const leaderArrow = lbl.leaderEnd;
 
-        // Find connected leader
-        // Heuristic: Line end must be close to text insertion point (within ~radius or fixed amount)
-        const txtRadius = txt.radius || 300;
-        const leaderThreshold = txtRadius * 2.0;
+        if (!leaderAnchor || !leaderArrow) return;
+        if (distance(leaderAnchor, leaderArrow) < 1e-3) {
+            markDebug(leaderAnchor, 'A=B invalid leader');
+            return;
+        }
 
-        let targetPoint: Point | null = null;
-        let anchorPoint: Point | null = null;
+        const anchorBeam = findBeamForPoint(leaderAnchor);
+        const arrowBeam = findBeamForPoint(leaderArrow);
+        const conflict = anchorBeam && arrowBeam && anchorBeam.index !== arrowBeam.index;
 
-        const leader = lineEntities.find(l => {
-            if (l.type === EntityType.LINE && l.start && l.end) {
-                if (distance(l.start, txt.start!) < leaderThreshold) { targetPoint = l.end; anchorPoint = l.start; return true; }
-                if (distance(l.end, txt.start!) < leaderThreshold) { targetPoint = l.start; anchorPoint = l.end; return true; }
-            }
-            // Support simple polylines (2 points) usually used for leaders
-            if (l.type === EntityType.LWPOLYLINE && l.vertices && l.vertices.length >= 2) {
-                const first = l.vertices[0];
-                const last = l.vertices[l.vertices.length - 1];
-                if (distance(first, txt.start!) < leaderThreshold) { targetPoint = last; anchorPoint = first; return true; }
-                if (distance(last, txt.start!) < leaderThreshold) { targetPoint = first; anchorPoint = last; return true; }
-            }
-            return false;
-        });
+        const hitBeam = conflict ? null : (anchorBeam || arrowBeam);
 
-        if (!leader || !targetPoint || !anchorPoint) return; // Filter out if no connecting line
+        if (conflict) {
+            throw new Error(`Leader endpoints land on different beams in ${resultLayer}. Label: ${lbl.textRaw}`);
+        }
 
-        // Only care if leader anchor (start near text) lies on/within the beam
-        const hitBeam = beamObbs.find(item => {
-            const obb = item.obb!;
-            return isPointInOBB(anchorPoint!, obb);
-        });
-
-        if (hitBeam) {
-            // Parse Attributes
-            // Expected: "KL-1(200x500)" or "KL1 200x500" or with Chinese brackets "KL1（200x500）"
-            // Regex: Start with chars, separator, numbers x numbers
-            const match = firstLine.match(/^([A-Z0-9\-\(\)]+)[^0-9]+(\d+)[xX*×](\d+)/i);
-            // Fallbacks: simple space separator or Chinese brackets
-            const matchSimple = firstLine.match(/^([A-Z0-9\-\(\)]+)\s+(\d+)[xX*×](\d+)/i);
-            const matchCn = firstLine.match(/^([A-Z0-9\-\(\)]+)[（(]+(\d+)[xX*×](\d+)[）)]+/i);
-
-            const m = match || matchSimple || matchCn;
-            console.log(`Label match result: ${txt.text} ${JSON.stringify(m)}`);
-            if (m) {
-                hitBeam.attr = {
-                    code: m[1],
-                    width: parseInt(m[2]),
-                    height: parseInt(m[3]),
-                    rawLabel: firstLine,
-                    fromLabel: true
-                };
-                hitBeam.label = txt;
-                matchCount++;
-            }
+        if (hitBeam && lbl.parsed) {
+            hitBeam.attr = {
+                code: lbl.parsed.code,
+                span: lbl.parsed.span,
+                width: lbl.parsed.width ?? 0,
+                height: lbl.parsed.height ?? 0,
+                rawLabel: lbl.textRaw,
+                fromLabel: true
+            };
+            const spanText = lbl.parsed.span ? `(${lbl.parsed.span})` : '';
+            markDebug(leaderArrow, `${lbl.parsed.code}${spanText}`, lbl.orientation);
+            matchCount++;
         }
     });
 
@@ -1078,11 +1063,12 @@ export const runBeamAttributeMounting = (
         let finalAngle = angleDeg;
         if (finalAngle > 90 || finalAngle < -90) finalAngle += 180;
         if (finalAngle > 180) finalAngle -= 360;
+        const spanText = b.attr.span ? `(${b.attr.span})` : '';
 
         updatedLabels.push({
             type: EntityType.TEXT,
             layer: resultLayer,
-            text: `B2-${idx + 1}\n${b.attr.code}`,
+            text: `B2-${idx + 1}\n${b.attr.code}${spanText}`,
             start: b.obb!.center,
             radius: 160,
             startAngle: finalAngle
@@ -1095,13 +1081,28 @@ export const runBeamAttributeMounting = (
         setProjects,
         setLayerColors,
         resultLayer,
-        [...attrBeams, ...updatedLabels],
+        [...attrBeams, ...updatedLabels, ...debugMarks],
         '#8b5cf6', // Violet
         ['AXIS', 'COLU_CALC'],
         true,
         undefined,
         ['BEAM_STEP1_RAW', 'BEAM_STEP2_GEO', 'BEAM_STEP2_INTER_SECTION'] // Hide previous markers to clean up view
     );
+
+    if (debugMarks.length > 0) {
+        setLayerColors(prev => ({ ...prev, [debugLayer]: '#ff0000' }));
+        setProjects(prev => prev.map(p => {
+            if (p.id !== activeProject.id) return p;
+            const layers = p.data.layers.includes(debugLayer) ? p.data.layers : [debugLayer, ...p.data.layers];
+            const activeLayers = new Set(p.activeLayers);
+            activeLayers.add(debugLayer);
+            return {
+                ...p,
+                data: { ...p.data, layers },
+                activeLayers
+            };
+        }));
+    }
 
     console.log(`Matched ${matchCount} labels. Propagated to full axes.`);
 };
@@ -1123,3 +1124,9 @@ export const runBeamPropagation = (
 ) => {
     console.log("Step 5: Propagation");
 };
+
+
+
+
+
+
