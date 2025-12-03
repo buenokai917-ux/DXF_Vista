@@ -547,11 +547,11 @@ const detectIntersections = (beams: DxfEntity[]): { intersections: DxfEntity[], 
     // 1. Compute OBBs
     const obbs = beams.map(b => ({ obb: computeOBB(b), beam: b }));
     const boundsList = beams.map(b => getEntityBounds(b));
-    
+
     // 2. Cluster Intersections
     // Key: center coordinates (quantized) to merge overlapping intersection zones
     const clusters = new Map<string, { bounds: Bounds, beams: Set<number> }>();
-    
+
     // Helper to merge bounds
     const mergeBounds = (a: Bounds, b: Bounds): Bounds => ({
         minX: Math.min(a.minX, b.minX),
@@ -566,7 +566,7 @@ const detectIntersections = (beams: DxfEntity[]): { intersections: DxfEntity[], 
         const minY = Math.max(a.minY, b.minY);
         const maxY = Math.min(a.maxY, b.maxY);
         if (minX < maxX - 10 && minY < maxY - 10) { // Tolerance 10mm
-             return { minX, minY, maxX, maxY };
+            return { minX, minY, maxX, maxY };
         }
         return null;
     };
@@ -581,21 +581,21 @@ const detectIntersections = (beams: DxfEntity[]): { intersections: DxfEntity[], 
             const obbB = obbs[j].obb;
             const bB = boundsList[j];
             if (!obbB || !bB) continue;
-            
+
             const oriB = Math.abs(obbB.u.x) >= Math.abs(obbB.u.y) ? 'H' : 'V';
-            
+
             // Only consider perpendicular intersections for Cross/T/L
             if (oriA === oriB) continue;
 
             const overlap = overlapBounds(bA, bB);
             if (!overlap) continue;
-            
+
             // Found an intersection. Find or create cluster.
             // Simple clustering by center distance
-            const cx = (overlap.minX + overlap.maxX)/2;
-            const cy = (overlap.minY + overlap.maxY)/2;
-            const key = `${Math.round(cx/200)}_${Math.round(cy/200)}`; // 200mm grid for clustering proximity
-            
+            const cx = (overlap.minX + overlap.maxX) / 2;
+            const cy = (overlap.minY + overlap.maxY) / 2;
+            const key = `${Math.round(cx / 200)}_${Math.round(cy / 200)}`; // 200mm grid for clustering proximity
+
             if (!clusters.has(key)) {
                 clusters.set(key, { bounds: overlap, beams: new Set([i, j]) });
             } else {
@@ -615,7 +615,7 @@ const detectIntersections = (beams: DxfEntity[]): { intersections: DxfEntity[], 
     clusters.forEach((val) => {
         // Classify based on topological arms
         const dirs = { right: false, up: false, left: false, down: false };
-        const center = { x: (val.bounds.minX + val.bounds.maxX)/2, y: (val.bounds.minY + val.bounds.maxY)/2 };
+        const center = { x: (val.bounds.minX + val.bounds.maxX) / 2, y: (val.bounds.minY + val.bounds.maxY) / 2 };
         const tol = 150; // Distance tolerance to consider a beam extending out
 
         val.beams.forEach(idx => {
@@ -630,8 +630,8 @@ const detectIntersections = (beams: DxfEntity[]): { intersections: DxfEntity[], 
                 const dx = p.x - center.x;
                 const dy = p.y - center.y;
                 // If endpoint is within intersection bounds (or close), it does not extend.
-                if (Math.abs(dx) < (val.bounds.maxX - val.bounds.minX)/2 + tol && 
-                    Math.abs(dy) < (val.bounds.maxY - val.bounds.minY)/2 + tol) return;
+                if (Math.abs(dx) < (val.bounds.maxX - val.bounds.minX) / 2 + tol &&
+                    Math.abs(dy) < (val.bounds.maxY - val.bounds.minY) / 2 + tol) return;
 
                 if (Math.abs(dx) > Math.abs(dy)) {
                     if (dx > 0) dirs.right = true; else dirs.left = true;
@@ -643,11 +643,11 @@ const detectIntersections = (beams: DxfEntity[]): { intersections: DxfEntity[], 
             check(p2);
         });
 
-        const arms = (dirs.right?1:0) + (dirs.left?1:0) + (dirs.up?1:0) + (dirs.down?1:0);
+        const arms = (dirs.right ? 1 : 0) + (dirs.left ? 1 : 0) + (dirs.up ? 1 : 0) + (dirs.down ? 1 : 0);
         let shape: IntersectionShape = 'L';
         if (arms === 4) shape = 'C';
         else if (arms === 3) shape = 'T';
-        
+
         // Refined visual box (use the computed bounds)
         const rect: DxfEntity = {
             type: EntityType.LWPOLYLINE,
@@ -900,13 +900,210 @@ export const runBeamIntersectionProcessing = (
 };
 
 
+// --- STEP 3: ATTRIBUTE MOUNTING ---
+// Extended interface to hold attributes during processing
+interface BeamAttributes {
+    code: string; // e.g., KL1
+    width: number;
+    height: number;
+    rawLabel: string;
+    fromLabel: boolean;
+}
+
 export const runBeamAttributeMounting = (
     activeProject: ProjectFile,
     projects: ProjectFile[],
     setProjects: React.Dispatch<React.SetStateAction<ProjectFile[]>>,
     setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>
 ) => {
-    console.log("Step 3: Attribute Mounting");
+    const sourceLayer = 'BEAM_STEP2_GEO';
+    const labelSourceLayer = 'MERGE_LABEL';
+    const resultLayer = 'BEAM_STEP3_ATTR';
+
+    const beams = extractEntities([sourceLayer], activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
+        .filter(e => e.type !== EntityType.TEXT);
+    if (beams.length === 0) {
+        alert("No beams found in Step 2. Run Intersection Processing first.");
+        return;
+    }
+
+    // 1. Deep Copy Beams to New Layer
+    const attrBeams = JSON.parse(JSON.stringify(beams)) as DxfEntity[];
+    attrBeams.forEach(b => b.layer = resultLayer);
+
+    // 2. Extract Labels and Leaders
+    const labelEntities = extractEntities([labelSourceLayer], activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
+    const textEntities = labelEntities.filter(e => e.type === EntityType.TEXT);
+    const lineEntities = labelEntities.filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
+
+    // 3. Map to OBBs for Hit Testing
+    const beamObbs = attrBeams
+        .map((b, i) => ({ obb: computeOBB(b), index: i, attr: null as BeamAttributes | null, label: null as DxfEntity | null }))
+        .filter(b => b.obb !== null);
+
+    const isPointInOBB = (pt: Point, obb: OBB): boolean => {
+        const dx = pt.x - obb.center.x;
+        const dy = pt.y - obb.center.y;
+        const du = dx * obb.u.x + dy * obb.u.y;
+        const dv = dx * -obb.u.y + dy * obb.u.x; // perp
+        return Math.abs(du) <= obb.halfLen + 20 && Math.abs(dv) <= obb.halfWidth + 20;
+    };
+
+    // 4. Match Logic
+    let matchCount = 0;
+
+    textEntities.forEach(txt => {
+        if (!txt.text || !txt.start) return;
+        const firstLine = (txt.text.split(/\r?\n/)[0] || '').trim();
+        if (!firstLine) return;
+
+        // Find connected leader
+        // Heuristic: Line end must be close to text insertion point (within ~radius or fixed amount)
+        const txtRadius = txt.radius || 300;
+        const leaderThreshold = txtRadius * 2.0;
+
+        let targetPoint: Point | null = null;
+        let anchorPoint: Point | null = null;
+
+        const leader = lineEntities.find(l => {
+            if (l.type === EntityType.LINE && l.start && l.end) {
+                if (distance(l.start, txt.start!) < leaderThreshold) { targetPoint = l.end; anchorPoint = l.start; return true; }
+                if (distance(l.end, txt.start!) < leaderThreshold) { targetPoint = l.start; anchorPoint = l.end; return true; }
+            }
+            // Support simple polylines (2 points) usually used for leaders
+            if (l.type === EntityType.LWPOLYLINE && l.vertices && l.vertices.length >= 2) {
+                const first = l.vertices[0];
+                const last = l.vertices[l.vertices.length - 1];
+                if (distance(first, txt.start!) < leaderThreshold) { targetPoint = last; anchorPoint = first; return true; }
+                if (distance(last, txt.start!) < leaderThreshold) { targetPoint = first; anchorPoint = last; return true; }
+            }
+            return false;
+        });
+
+        if (!leader || !targetPoint || !anchorPoint) return; // Filter out if no connecting line
+
+        // Only care if leader anchor (start near text) lies on/within the beam
+        const hitBeam = beamObbs.find(item => {
+            const obb = item.obb!;
+            return isPointInOBB(anchorPoint!, obb);
+        });
+
+        if (hitBeam) {
+            // Parse Attributes
+            // Expected: "KL-1(200x500)" or "KL1 200x500" or with Chinese brackets "KL1（200x500）"
+            // Regex: Start with chars, separator, numbers x numbers
+            const match = firstLine.match(/^([A-Z0-9\-\(\)]+)[^0-9]+(\d+)[xX*×](\d+)/i);
+            // Fallbacks: simple space separator or Chinese brackets
+            const matchSimple = firstLine.match(/^([A-Z0-9\-\(\)]+)\s+(\d+)[xX*×](\d+)/i);
+            const matchCn = firstLine.match(/^([A-Z0-9\-\(\)]+)[（(]+(\d+)[xX*×](\d+)[）)]+/i);
+
+            const m = match || matchSimple || matchCn;
+            console.log(`Label match result: ${txt.text} ${JSON.stringify(m)}`);
+            if (m) {
+                hitBeam.attr = {
+                    code: m[1],
+                    width: parseInt(m[2]),
+                    height: parseInt(m[3]),
+                    rawLabel: firstLine,
+                    fromLabel: true
+                };
+                hitBeam.label = txt;
+                matchCount++;
+            }
+        }
+    });
+
+    // 5. Propagation (Collinear beams on same axis)
+    // Group beams by axis orientation and position
+    const sortedBeams = [...beamObbs].sort((a, b) => {
+        const angA = Math.atan2(a.obb!.u.y, a.obb!.u.x);
+        const angB = Math.atan2(b.obb!.u.y, b.obb!.u.x);
+        if (Math.abs(angA - angB) > 0.1) return angA - angB;
+
+        // Perpendicular distance from origin
+        const distA = a.obb!.center.x * -a.obb!.u.y + a.obb!.center.y * a.obb!.u.x;
+        const distB = b.obb!.center.x * -b.obb!.u.y + b.obb!.center.y * b.obb!.u.x;
+        return distA - distB;
+    });
+
+    // Iterate to find groups
+    let i = 0;
+    while (i < sortedBeams.length) {
+        let j = i + 1;
+        const group = [sortedBeams[i]];
+        const base = sortedBeams[i];
+
+        while (j < sortedBeams.length) {
+            const curr = sortedBeams[j];
+            const dot = Math.abs(base.obb!.u.x * curr.obb!.u.x + base.obb!.u.y * curr.obb!.u.y);
+            if (dot < 0.98) break; // Angle mismatch
+
+            const perpDistA = base.obb!.center.x * -base.obb!.u.y + base.obb!.center.y * base.obb!.u.x;
+            const perpDistB = curr.obb!.center.x * -curr.obb!.u.y + curr.obb!.center.y * curr.obb!.u.x;
+
+            if (Math.abs(perpDistA - perpDistB) > 200) break; // Not collinear
+
+            group.push(curr);
+            j++;
+        }
+
+        // Within this collinear group, check if we have attributes to propagate
+        // Strategy: If one beam has attr, spread to others if they don't
+        // Refinement: Usually propagation stops at major supports, but here user said "same axis... assign same attributes".
+        // We will propagate from the first found attribute to undefined ones.
+
+        // Collect all defined attributes in this line
+        const definedAttrs = group.filter(b => b.attr !== null && b.attr.fromLabel).map(b => b.attr!);
+
+        // Simple case: unique attribute for the whole span line
+        if (definedAttrs.length > 0) {
+            // Use the most frequent or first one? Let's use first for now.
+            const primaryAttr = definedAttrs[0];
+
+            group.forEach(b => {
+                if (!b.attr) {
+                    b.attr = { ...primaryAttr, fromLabel: false }; // Copy only to unlabeled
+                }
+            });
+        }
+
+        i = j;
+    }
+
+    // 6. Generate Text Entities by reusing original labels (append code on new line)
+    const updatedLabels: DxfEntity[] = [];
+    beamObbs.forEach((b, idx) => {
+        if (!b.attr || !b.obb) return;
+        const angleDeg = Math.atan2(b.obb!.u.y, b.obb!.u.x) * 180 / Math.PI;
+        let finalAngle = angleDeg;
+        if (finalAngle > 90 || finalAngle < -90) finalAngle += 180;
+        if (finalAngle > 180) finalAngle -= 360;
+
+        updatedLabels.push({
+            type: EntityType.TEXT,
+            layer: resultLayer,
+            text: `B2-${idx + 1}\n${b.attr.code}`,
+            start: b.obb!.center,
+            radius: 160,
+            startAngle: finalAngle
+        });
+    });
+
+    // 7. Commit
+    updateProject(
+        activeProject,
+        setProjects,
+        setLayerColors,
+        resultLayer,
+        [...attrBeams, ...updatedLabels],
+        '#8b5cf6', // Violet
+        ['AXIS', 'COLU_CALC'],
+        true,
+        undefined,
+        ['BEAM_STEP1_RAW', 'BEAM_STEP2_GEO', 'BEAM_STEP2_INTER_SECTION'] // Hide previous markers to clean up view
+    );
+
+    console.log(`Matched ${matchCount} labels. Propagated to full axes.`);
 };
 
 export const runBeamTopologyMerge = (

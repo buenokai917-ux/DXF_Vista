@@ -1,224 +1,406 @@
 import React from 'react';
 import { DxfEntity, EntityType, ProjectFile, ViewportRegion, Point, Bounds } from '../types';
 import { extractEntities } from '../utils/dxfHelpers';
-import { updateProject, boundsOverlap, isPointInBounds, expandBounds } from './structure-common';
+import { boundsOverlap, expandBounds, isPointInBounds } from './structure-common';
 import {
-    calculateMergeVector,
-    getEntityBounds,
-    getGridIntersections,
-    groupEntitiesByProximity, 
-    findTitleForBounds, 
-    parseViewportTitle 
+  calculateMergeVector,
+  getEntityBounds,
+  getGridIntersections,
+  groupEntitiesByProximity,
+  findTitleForBounds,
+  parseViewportTitle
 } from '../utils/geometryUtils';
 
 export const runCalculateSplitRegions = (
-    activeProject: ProjectFile,
-    setProjects: React.Dispatch<React.SetStateAction<ProjectFile[]>>,
-    setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>,
-    suppressAlert = false
+  activeProject: ProjectFile,
+  setProjects: React.Dispatch<React.SetStateAction<ProjectFile[]>>,
+  setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>,
+  suppressAlert = false
 ): ViewportRegion[] | null => {
-    const resultLayer = 'VIEWPORT_CALC';
-    const debugLayer = 'VIEWPORT_DEBUG';
+  const resultLayer = 'VIEWPORT_CALC';
+  const debugLayer = 'VIEWPORT_DEBUG';
 
-    const axisLayers = activeProject.data.layers.filter(l => l.toUpperCase().includes('AXIS'));
-    const axisLines = extractEntities(axisLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
-        .filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
+  const axisLayers = activeProject.data.layers.filter(l => l.toUpperCase().includes('AXIS'));
+  const axisLines = extractEntities(axisLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
+    .filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
 
-    if (axisLines.length === 0) {
-         if (!suppressAlert) console.log("No AXIS lines found to determine regions.");
-        return null;
-    }
+  if (axisLines.length === 0) {
+    if (!suppressAlert) console.log('No AXIS lines found to determine regions.');
+    return null;
+  }
 
-    const allText = extractEntities(activeProject.data.layers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
-        .filter(e => e.type === EntityType.TEXT);
-    
-    const allLines = extractEntities(activeProject.data.layers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
-        .filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
+  const allText = extractEntities(activeProject.data.layers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
+    .filter(e => e.type === EntityType.TEXT);
 
-    const clusters = groupEntitiesByProximity(axisLines, 5000); 
-    
-    const newEntities: DxfEntity[] = [];
-    const debugEntities: DxfEntity[] = [];
-    const regions: ViewportRegion[] = [];
+  const allLines = extractEntities(activeProject.data.layers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
+    .filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
 
-    clusters.forEach((box, i) => {
-        const { title, scannedBounds } = findTitleForBounds(box, allText, allLines);
-        const label = title || `BLOCK ${i + 1}`;
+  const clusters = groupEntitiesByProximity(axisLines, 5000);
 
-        regions.push({
-            bounds: box,
-            title: label,
-            info: parseViewportTitle(label)
-        });
+  const newEntities: DxfEntity[] = [];
+  const debugEntities: DxfEntity[] = [];
+  const regions: ViewportRegion[] = [];
 
-        const rect: DxfEntity = {
-            type: EntityType.LWPOLYLINE,
-            layer: resultLayer,
-            closed: true,
-            vertices: [
-                { x: box.minX, y: box.minY },
-                { x: box.maxX, y: box.minY },
-                { x: box.maxX, y: box.maxY },
-                { x: box.minX, y: box.maxY }
-            ]
-        };
-        newEntities.push(rect);
+  clusters.forEach((box, i) => {
+    const { title, scannedBounds } = findTitleForBounds(box, allText, allLines);
+    const label = title || `BLOCK ${i + 1}`;
 
-        newEntities.push({
-            type: EntityType.TEXT,
-            layer: resultLayer,
-            text: label,
-            start: { x: box.minX, y: box.maxY + 500 },
-            radius: 1000 
-        });
-
-        scannedBounds.forEach(sb => {
-            debugEntities.push({
-                type: EntityType.LWPOLYLINE,
-                layer: debugLayer,
-                closed: true,
-                vertices: [
-                    { x: sb.minX, y: sb.minY },
-                    { x: sb.maxX, y: sb.minY },
-                    { x: sb.maxX, y: sb.maxY },
-                    { x: sb.minX, y: sb.maxY }
-                ]
-            });
-        });
+    regions.push({
+      bounds: box,
+      title: label,
+      info: parseViewportTitle(label)
     });
 
-    if (newEntities.length === 0) {
-        if (!suppressAlert) console.log("Could not determine split regions.");
-        return null;
-    }
-
-    const updatedData = {
-        ...activeProject.data,
-        entities: [...activeProject.data.entities, ...newEntities, ...debugEntities],
-        layers: [...new Set([...activeProject.data.layers, resultLayer, debugLayer])]
+    const rect: DxfEntity = {
+      type: EntityType.LWPOLYLINE,
+      layer: resultLayer,
+      closed: true,
+      vertices: [
+        { x: box.minX, y: box.minY },
+        { x: box.maxX, y: box.minY },
+        { x: box.maxX, y: box.maxY },
+        { x: box.minX, y: box.maxY }
+      ]
     };
+    newEntities.push(rect);
 
-    setLayerColors(prev => ({ ...prev, [resultLayer]: '#FF00FF', [debugLayer]: '#444444' }));
+    newEntities.push({
+      type: EntityType.TEXT,
+      layer: resultLayer,
+      text: label,
+      start: { x: box.minX, y: box.maxY + 500 },
+      radius: 250 // Shrink font size (1/4 original)
+    });
 
-    setProjects(prev => prev.map(p => {
-        if (p.id === activeProject.id) {
-             const newActive = new Set(p.activeLayers);
-             newActive.add(resultLayer);
-             return { ...p, data: updatedData, splitRegions: regions, activeLayers: newActive };
-        }
-        return p;
-    }));
+    scannedBounds.forEach(sb => {
+      debugEntities.push({
+        type: EntityType.LWPOLYLINE,
+        layer: debugLayer,
+        closed: true,
+        vertices: [
+          { x: sb.minX, y: sb.minY },
+          { x: sb.maxX, y: sb.minY },
+          { x: sb.maxX, y: sb.maxY },
+          { x: sb.minX, y: sb.maxY }
+        ]
+      });
+    });
+  });
 
-    if (!suppressAlert) console.log(`Found ${clusters.length} regions.`);
-    return regions;
+  if (newEntities.length === 0) {
+    if (!suppressAlert) console.log('Could not determine split regions.');
+    return null;
+  }
+
+  const updatedData = {
+    ...activeProject.data,
+    entities: [...activeProject.data.entities, ...newEntities, ...debugEntities],
+    layers: [...new Set([...activeProject.data.layers, resultLayer, debugLayer])]
+  };
+
+  setLayerColors(prev => ({ ...prev, [resultLayer]: '#FF00FF', [debugLayer]: '#444444' }));
+
+  setProjects(prev =>
+    prev.map(p => {
+      if (p.id === activeProject.id) {
+        const newActive = new Set(p.activeLayers);
+        newActive.add(resultLayer);
+        return { ...p, data: updatedData, splitRegions: regions, activeLayers: newActive };
+      }
+      return p;
+    })
+  );
+
+  if (!suppressAlert) console.log(`Found ${clusters.length} regions.`);
+  return regions;
 };
 
 export const runMergeViews = (
-    activeProject: ProjectFile,
-    setProjects: React.Dispatch<React.SetStateAction<ProjectFile[]>>,
-    setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>
+  activeProject: ProjectFile,
+  setProjects: React.Dispatch<React.SetStateAction<ProjectFile[]>>,
+  setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>
 ) => {
-    const regions = activeProject.splitRegions;
+  const RESULT_LAYER_H = 'MERGE_LABEL_H';
+  const RESULT_LAYER_V = 'MERGE_LABEL_V';
+  const RESULT_LAYER_COLORS: Record<string, string> = {
+    [RESULT_LAYER_H]: '#00FFFF',
+    [RESULT_LAYER_V]: '#FF00FF'
+  };
 
-    if (!regions || regions.length === 0) {
-        console.log("Could not identify regions to merge.");
-        return;
-    }
-    
-    const resultLayer = 'MERGE_LABEL';
-    const axisLayers = activeProject.data.layers.filter(l => l.toUpperCase().includes('AXIS'));
-    const axisLines = extractEntities(axisLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
-        .filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
+  const regions = activeProject.splitRegions;
 
-    const groups: Record<string, ViewportRegion[]> = {};
-    regions.forEach(r => {
-        const key = r.info ? r.info.prefix : r.title;
-        if (!groups[key]) groups[key] = [];
-        groups[key].push(r);
-    });
+  if (!regions || regions.length === 0) {
+    console.log('Could not identify regions to merge.');
+    return;
+  }
 
-    const mergedEntities: DxfEntity[] = [];
-    const allEntities = extractEntities(activeProject.data.layers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
+  const axisLayers = activeProject.data.layers.filter(l => l.toUpperCase().includes('AXIS'));
+  const axisLines = extractEntities(axisLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
+    .filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
 
-    let mergedCount = 0;
-    const LABEL_MARGIN = 2000; 
+  const groups: Record<string, ViewportRegion[]> = {};
+  regions.forEach(r => {
+    const key = r.info ? r.info.prefix : r.title;
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(r);
+  });
 
-    const isLabelEntity = (ent: DxfEntity): boolean => {
-        const u = ent.layer.toUpperCase();
-        if (u.includes('AXIS') || u.includes('轴')) return false;
-        const layerLooksLabel = u.includes('标注') || u.includes('DIM') || u.includes('LABEL') || /^Z[\u4e00-\u9fa5]/.test(ent.layer);
+  const mergedEntities: DxfEntity[] = [];
+  const mergedByLayer: Record<string, DxfEntity[]> = {};
+  const allEntities = extractEntities(activeProject.data.layers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
 
-        if (ent.type === EntityType.DIMENSION) return true;
-        if (ent.type === EntityType.TEXT || ent.type === EntityType.ATTRIB) return layerLooksLabel;
-        return layerLooksLabel;
-    };
+  let mergedCount = 0;
+  const LABEL_MARGIN = 2000;
+  const ANGLE_TOLERANCE = 15;
+  const LEADER_PROXIMITY = 1200;
 
-    const shouldIncludeEntity = (ent: DxfEntity, bounds: Bounds): boolean => {
-         const expanded = expandBounds(bounds, LABEL_MARGIN);
-         if (ent.start && isPointInBounds(ent.start, expanded)) return true;
-         if (ent.type === EntityType.DIMENSION) {
-             if (ent.measureStart && isPointInBounds(ent.measureStart, expanded)) return true;
-             if (ent.measureEnd && isPointInBounds(ent.measureEnd, expanded)) return true;
-             if (ent.end && isPointInBounds(ent.end, expanded)) return true;
-         }
-         const b = getEntityBounds(ent);
-         if (b) {
-             const cx = (b.minX + b.maxX)/2;
-             const cy = (b.minY + b.maxY)/2;
-             if (isPointInBounds({x: cx, y: cy}, expanded)) return true;
-             if (boundsOverlap(b, expanded)) return true;
-         }
-         return false;
-    };
+  const normalizeAngle = (deg: number) => {
+    let a = deg % 360;
+    if (a < 0) a += 360;
+    return a;
+  };
 
-    Object.entries(groups).forEach(([prefix, views]) => {
-        views.sort((a, b) => (a.info?.index ?? 1) - (b.info?.index ?? 1));
-        const baseView = views[0]; 
-        
-        allEntities.forEach(ent => {
-           if (shouldIncludeEntity(ent, baseView.bounds) && isLabelEntity(ent)) {
-               const clone = { ...ent, layer: resultLayer };
-               mergedEntities.push(clone);
-           }
-        });
-        
-        if (views.length > 1) {
-            const baseIntersections = getGridIntersections(baseView.bounds, axisLines);
+  const isHorizontalAngle = (deg: number) => {
+    const a = normalizeAngle(deg) % 180;
+    return a <= ANGLE_TOLERANCE || a >= 180 - ANGLE_TOLERANCE;
+  };
 
-            for (let i = 1; i < views.length; i++) {
-                const targetView = views[i];
-                const targetIntersections = getGridIntersections(targetView.bounds, axisLines);
-                
-                const vec = calculateMergeVector(baseIntersections, targetIntersections);
-                
-                if (vec) {
-                    allEntities.forEach(ent => {
-                        if (shouldIncludeEntity(ent, targetView.bounds) && isLabelEntity(ent)) {
-                            const clone = { ...ent };
-                            clone.layer = resultLayer;
-                            
-                            if (clone.start) clone.start = { x: clone.start.x + vec.x, y: clone.start.y + vec.y };
-                            if (clone.end) clone.end = { x: clone.end.x + vec.x, y: clone.end.y + vec.y };
-                            if (clone.center) clone.center = { x: clone.center.x + vec.x, y: clone.center.y + vec.y };
-                            if (clone.vertices) clone.vertices = clone.vertices.map(v => ({ x: v.x + vec.x, y: v.y + vec.y }));
-                            if (clone.measureStart) clone.measureStart = { x: clone.measureStart.x + vec.x, y: clone.measureStart.y + vec.y };
-                            if (clone.measureEnd) clone.measureEnd = { x: clone.measureEnd.x + vec.x, y: clone.measureEnd.y + vec.y };
+  const isVerticalAngle = (deg: number) => {
+    const a = normalizeAngle(deg) % 180;
+    return Math.abs(a - 90) <= ANGLE_TOLERANCE;
+  };
 
-                            mergedEntities.push(clone);
-                        }
-                    });
-                    mergedCount++;
-                }
-            }
+  const dist = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
+
+  const distancePointToSegment = (p: Point, a: Point, b: Point) => {
+    const abx = b.x - a.x;
+    const aby = b.y - a.y;
+    const apx = p.x - a.x;
+    const apy = p.y - a.y;
+    const abLenSq = abx * abx + aby * aby;
+    if (abLenSq === 0) return dist(p, a);
+    let t = (apx * abx + apy * aby) / abLenSq;
+    t = Math.max(0, Math.min(1, t));
+    const proj = { x: a.x + abx * t, y: a.y + aby * t };
+    return dist(p, proj);
+  };
+
+  const layerLooksLabel = (layer: string) => {
+    const u = layer.toUpperCase();
+    if (u.includes('AXIS') || u.includes('中心线')) return false;
+    return u.includes('标注') || u.includes('DIM') || u.includes('LABEL') || /^Z[\u4e00-\u9fa5]/.test(layer);
+  };
+
+  const detectNameOrientation = (layer: string): 'H' | 'V' | null => {
+    const upper = layer.toUpperCase();
+    if (layer.includes('水平') || upper.includes('HORIZONTAL') || upper.includes('_H')) return 'H';
+    if (layer.includes('垂直') || layer.includes('竖') || upper.includes('VERT') || upper.includes('_V')) return 'V';
+    return null;
+  };
+
+  const collectLeaderSegments = (layerEntities: DxfEntity[], texts: DxfEntity[]) => {
+    const segments: { start: Point; end: Point }[] = [];
+
+    layerEntities.forEach(ent => {
+      if (ent.type === EntityType.LINE && ent.start && ent.end) {
+        segments.push({ start: ent.start, end: ent.end });
+      } else if (ent.type === EntityType.LWPOLYLINE && ent.vertices && ent.vertices.length > 1) {
+        for (let i = 0; i < ent.vertices.length - 1; i++) {
+          const a = ent.vertices[i];
+          const b = ent.vertices[i + 1];
+          if (a && b) segments.push({ start: a, end: b });
         }
-        mergedCount++;
+      }
     });
 
-    if (mergedEntities.length === 0) {
-        console.log("No label entities found to merge.");
-        return;
+    if (segments.length === 0 || texts.length === 0) return segments;
+
+    const nearSegments: { start: Point; end: Point }[] = [];
+    texts.forEach(t => {
+      if (!t.start) return;
+      const threshold = (t.radius || 300) * 2 + LEADER_PROXIMITY;
+      segments.forEach(seg => {
+        if (distancePointToSegment(t.start!, seg.start, seg.end) <= threshold) {
+          nearSegments.push(seg);
+        }
+      });
+    });
+
+    return nearSegments.length > 0 ? nearSegments : segments;
+  };
+
+  const detectLeaderOrientation = (segments: { start: Point; end: Point }[]): 'H' | 'V' | null => {
+    let h = 0;
+    let v = 0;
+    segments.forEach(seg => {
+      const angle = Math.abs((Math.atan2(seg.end.y - seg.start.y, seg.end.x - seg.start.x) * 180) / Math.PI);
+      if (isHorizontalAngle(angle)) h++;
+      else if (isVerticalAngle(angle)) v++;
+    });
+    if (h === 0 && v === 0) return null;
+    return h >= v ? 'H' : 'V';
+  };
+
+  const detectTextOrientation = (texts: DxfEntity[]): 'H' | 'V' | null => {
+    let h = 0;
+    let v = 0;
+    texts.forEach(t => {
+      const rot = t.rotation !== undefined ? t.rotation : (t.startAngle || 0);
+      const ang = normalizeAngle(rot) % 180;
+      if (isHorizontalAngle(ang)) h++;
+      else if (isVerticalAngle(ang)) v++;
+    });
+    if (h === 0 && v === 0) return null;
+    return h >= v ? 'H' : 'V';
+  };
+
+  const labelLayerTargets: Record<string, string> = {};
+  const entitiesByLayer: Record<string, DxfEntity[]> = {};
+  allEntities.forEach(ent => {
+    if (!entitiesByLayer[ent.layer]) entitiesByLayer[ent.layer] = [];
+    entitiesByLayer[ent.layer].push(ent);
+  });
+
+  Object.entries(entitiesByLayer).forEach(([layer, ents]) => {
+    if (!layerLooksLabel(layer)) return;
+    const texts = ents.filter(e => (e.type === EntityType.TEXT || e.type === EntityType.ATTRIB) && e.start);
+    const nameHint = detectNameOrientation(layer);
+    const leaderSegments = collectLeaderSegments(ents, texts);
+    if (leaderSegments.length === 0) return; // Only focus on layers with leaders
+    const leaderOrientation = detectLeaderOrientation(leaderSegments);
+    const textOrientation = detectTextOrientation(texts);
+
+    let target: string | null = null;
+    if (nameHint === 'H') target = RESULT_LAYER_H;
+    else if (nameHint === 'V') target = RESULT_LAYER_V;
+    else if (leaderOrientation === 'H' && textOrientation === 'V') target = RESULT_LAYER_V;
+    else if (leaderOrientation === 'V' && textOrientation === 'H') target = RESULT_LAYER_H;
+
+    if (target) labelLayerTargets[layer] = target;
+  });
+
+  const pushMerged = (layer: string, ent: DxfEntity) => {
+    mergedEntities.push(ent);
+    if (!mergedByLayer[layer]) mergedByLayer[layer] = [];
+    mergedByLayer[layer].push(ent);
+  };
+
+  const isLabelEntity = (ent: DxfEntity): boolean => {
+    if (!labelLayerTargets[ent.layer]) return false;
+    const u = ent.layer.toUpperCase();
+    if (u.includes('AXIS') || u.includes('中心线')) return false;
+    const looksLabel = u.includes('标注') || u.includes('DIM') || u.includes('LABEL') || /^Z[\u4e00-\u9fa5]/.test(ent.layer);
+
+    if (ent.type === EntityType.DIMENSION) return true;
+    if (ent.type === EntityType.TEXT || ent.type === EntityType.ATTRIB) return looksLabel;
+    return looksLabel;
+  };
+
+  const shouldIncludeEntity = (ent: DxfEntity, bounds: Bounds): boolean => {
+    const expanded = expandBounds(bounds, LABEL_MARGIN);
+    if (ent.start && isPointInBounds(ent.start, expanded)) return true;
+    if (ent.type === EntityType.DIMENSION) {
+      if (ent.measureStart && isPointInBounds(ent.measureStart, expanded)) return true;
+      if (ent.measureEnd && isPointInBounds(ent.measureEnd, expanded)) return true;
+      if (ent.end && isPointInBounds(ent.end, expanded)) return true;
     }
-    
-    updateProject(activeProject, setProjects, setLayerColors, resultLayer, mergedEntities, '#00FFFF', [], false); 
-    console.log(`Consolidated labels from ${mergedCount} view groups into '${resultLayer}'.`);
+    const b = getEntityBounds(ent);
+    if (b) {
+      const cx = (b.minX + b.maxX) / 2;
+      const cy = (b.minY + b.maxY) / 2;
+      if (isPointInBounds({ x: cx, y: cy }, expanded)) return true;
+      if (boundsOverlap(b, expanded)) return true;
+    }
+    return false;
+  };
+
+  Object.entries(groups).forEach(([, views]) => {
+    views.sort((a, b) => (a.info?.index ?? 1) - (b.info?.index ?? 1));
+    const baseView = views[0];
+
+    allEntities.forEach(ent => {
+      const targetLayer = labelLayerTargets[ent.layer];
+      if (!targetLayer) return;
+      if (shouldIncludeEntity(ent, baseView.bounds) && isLabelEntity(ent)) {
+        const clone = { ...ent, layer: targetLayer };
+        pushMerged(targetLayer, clone);
+      }
+    });
+
+    if (views.length > 1) {
+      const baseIntersections = getGridIntersections(baseView.bounds, axisLines);
+
+      for (let i = 1; i < views.length; i++) {
+        const targetView = views[i];
+        const targetIntersections = getGridIntersections(targetView.bounds, axisLines);
+
+        const vec = calculateMergeVector(baseIntersections, targetIntersections);
+
+        if (vec) {
+          allEntities.forEach(ent => {
+            const targetLayer = labelLayerTargets[ent.layer];
+            if (!targetLayer) return;
+            if (shouldIncludeEntity(ent, targetView.bounds) && isLabelEntity(ent)) {
+              const clone = { ...ent, layer: targetLayer };
+
+              if (clone.start) clone.start = { x: clone.start.x + vec.x, y: clone.start.y + vec.y };
+              if (clone.end) clone.end = { x: clone.end.x + vec.x, y: clone.end.y + vec.y };
+              if (clone.center) clone.center = { x: clone.center.x + vec.x, y: clone.center.y + vec.y };
+              if (clone.vertices) clone.vertices = clone.vertices.map(v => ({ x: v.x + vec.x, y: v.y + vec.y }));
+              if (clone.measureStart) clone.measureStart = { x: clone.measureStart.x + vec.x, y: clone.measureStart.y + vec.y };
+              if (clone.measureEnd) clone.measureEnd = { x: clone.measureEnd.x + vec.x, y: clone.measureEnd.y + vec.y };
+
+              pushMerged(targetLayer, clone);
+            }
+          });
+          mergedCount++;
+        }
+      }
+    }
+    mergedCount++;
+  });
+
+  if (mergedEntities.length === 0) {
+    console.log('No label entities found to merge.');
+    return;
+  }
+
+  const layersAdded = Object.keys(mergedByLayer);
+  if (layersAdded.length === 0) {
+    console.log('No eligible label layers with leaders to merge.');
+    return;
+  }
+
+  setLayerColors(prev => {
+    const next = { ...prev };
+    layersAdded.forEach(l => {
+      next[l] = RESULT_LAYER_COLORS[l] || '#00FFFF';
+    });
+    return next;
+  });
+
+  setProjects(prev =>
+    prev.map(p => {
+      if (p.id === activeProject.id) {
+        const layersAddedSet = new Set(layersAdded);
+        const mergedLayerList = [
+          ...layersAdded,
+          ...p.data.layers.filter(l => !layersAddedSet.has(l))
+        ];
+        const updatedData = {
+          ...p.data,
+          entities: [...p.data.entities, ...mergedEntities],
+          layers: mergedLayerList
+        };
+
+        const activeLayers = new Set(p.activeLayers);
+        layersAdded.forEach(l => activeLayers.add(l));
+
+        return { ...p, data: updatedData, activeLayers };
+      }
+      return p;
+    })
+  );
+
+  console.log(`Consolidated labels from ${mergedCount} view groups into ${layersAdded.join(', ')}.`);
 };
