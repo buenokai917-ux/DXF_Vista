@@ -456,6 +456,36 @@ export const runMergeViews = (
       });
     });
 
+    // Fill missing width/height from same-code labels
+    const byCode = new Map<string, { width?: number; height?: number }>();
+    infos.forEach(info => {
+      const p = info.parsed;
+      if (!p) return;
+      if ((p.width ?? 0) > 0 && (p.height ?? 0) > 0) {
+        if (!byCode.has(p.code)) byCode.set(p.code, { width: p.width, height: p.height });
+      }
+    });
+
+    const needsManual: string[] = [];
+    infos.forEach(info => {
+      const p = info.parsed;
+      if (!p) return;
+      const missingDim = (p.width ?? 0) === 0 || (p.height ?? 0) === 0;
+      if (missingDim) {
+        const donor = byCode.get(p.code);
+        if (donor && donor.width && donor.height) {
+          p.width = donor.width;
+          p.height = donor.height;
+        } else {
+          needsManual.push(info.id);
+        }
+      }
+    });
+
+    if (needsManual.length > 0) {
+      console.warn(`Beam labels missing dimensions; please confirm manually: ${needsManual.join(', ')}`);
+    }
+
     return infos;
   };
 

@@ -69,7 +69,7 @@ const collectBeamSources = (
     const rawAxis = extractEntities(axisLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
     const axisLines = filterEntitiesInBounds(rawAxis, baseBounds);
 
-            // 2. Obstacles (Walls and Columns)
+    // 2. Obstacles (Walls and Columns)
     let walls: DxfEntity[] = [];
     const wallCalcLayer = activeProject.data.layers.find(l => l === 'WALL_CALC');
     if (wallCalcLayer) {
@@ -533,9 +533,7 @@ const extendBeamsToPerpendicular = (
 
 // --- INTERSECTION DETECTION (Topological Arm Counting) ---
 
-type IntersectionShape = 'C' | 'T' | 'L';
-
-const detectIntersections = (beams: DxfEntity[]): { intersections: DxfEntity[], labels: DxfEntity[] } => {
+const detectIntersections = (beams: DxfEntity[]): { intersections: DxfEntity[], labels: DxfEntity[], info: import('../types').BeamIntersectionInfo[] } => {
     // 1. Compute OBBs
     const obbs = beams.map(b => ({ obb: computeOBB(b), beam: b }));
     const boundsList = beams.map(b => getEntityBounds(b));
@@ -604,6 +602,8 @@ const detectIntersections = (beams: DxfEntity[]): { intersections: DxfEntity[], 
     const labels: DxfEntity[] = [];
     let counter = 1;
 
+    const infos: import('../types').BeamIntersectionInfo[] = [];
+
     clusters.forEach((val) => {
         // Classify based on topological arms
         const dirs = { right: false, up: false, left: false, down: false };
@@ -636,7 +636,7 @@ const detectIntersections = (beams: DxfEntity[]): { intersections: DxfEntity[], 
         });
 
         const arms = (dirs.right ? 1 : 0) + (dirs.left ? 1 : 0) + (dirs.up ? 1 : 0) + (dirs.down ? 1 : 0);
-        let shape: IntersectionShape = 'L';
+        let shape: import('../types').IntersectionShape = 'L';
         if (arms === 4) shape = 'C';
         else if (arms === 3) shape = 'T';
 
@@ -662,9 +662,28 @@ const detectIntersections = (beams: DxfEntity[]): { intersections: DxfEntity[], 
             radius: 250,
             startAngle: 0
         });
+
+        infos.push({
+            id: `INTER-${counter}`,
+            layer: 'BEAM_STEP2_INTER_SECTION',
+            shape: 'rect',
+            vertices: [
+                { x: val.bounds.minX, y: val.bounds.minY },
+                { x: val.bounds.maxX, y: val.bounds.minY },
+                { x: val.bounds.maxX, y: val.bounds.maxY },
+                { x: val.bounds.minX, y: val.bounds.maxY }
+            ],
+            bounds: { startX: val.bounds.minX, startY: val.bounds.minY, endX: val.bounds.maxX, endY: val.bounds.maxY },
+            center,
+            radius: undefined,
+            parts: undefined,
+            junction: shape,
+            angle: undefined,
+            beamIndexes: Array.from(val.beams)
+        });
     });
 
-    return { intersections, labels };
+    return { intersections, labels, info: infos };
 };
 
 const mergeOverlappingBeams = (beams: DxfEntity[]): DxfEntity[] => {
@@ -854,7 +873,7 @@ export const runBeamIntersectionProcessing = (
                 type: EntityType.TEXT,
                 layer: resultLayer,
                 start: center,
-                text: `B2-${idx + 1}`,
+                text: `B2-${idx}`,
                 radius: 200,
                 startAngle: angle
             });
@@ -885,10 +904,31 @@ export const runBeamIntersectionProcessing = (
             return {
                 ...p,
                 data: updatedData,
-                activeLayers: newActive
+                activeLayers: newActive,
+                beamStep2InterInfos: interMarks.info
             };
         }));
     }
+    // Save step2 GEO result snapshot
+    setProjects(prev => prev.map(p => {
+        if (p.id !== activeProject.id) return p;
+        const geoInfos = mergedBeams.map((ent, idx) => {
+            const b = getEntityBounds(ent)!;
+            const obb = computeOBB(ent);
+            return {
+                id: `B2-${idx}`,
+                layer: resultLayer,
+                shape: 'rect',
+                vertices: ent.vertices || [],
+                bounds: { startX: b.minX, startY: b.minY, endX: b.maxX, endY: b.maxY },
+                center: getCenter(ent) || undefined,
+                radius: undefined,
+                angle: obb ? (Math.atan2(obb.u.y, obb.u.x) * 180) / Math.PI : undefined,
+                beamIndex: idx
+            } as import('../types').BeamStep2GeoInfo;
+        });
+        return { ...p, beamStep2GeoInfos: geoInfos };
+    }));
     console.log(`Step 2: Processed intersections. Result: ${finalEntities.length} segments.`);
 };
 
@@ -914,6 +954,9 @@ export const runBeamAttributeMounting = (
     const resultLayer = 'BEAM_STEP3_ATTR';
     const debugLayer = 'BEAM_STEP3_TARGET_DEBUG';
     const beamLabels = activeProject.beamLabels || [];
+    const sources = collectBeamSources(activeProject, projects);
+    if (!sources) return;
+    const obstacleBounds = sources.obstacles.map(o => getEntityBounds(o)).filter((b): b is Bounds => !!b);
 
     const beams = extractEntities([sourceLayer], activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
         .filter(e => e.type !== EntityType.TEXT);
@@ -946,6 +989,42 @@ export const runBeamAttributeMounting = (
             const obb = item.obb!;
             return isPointInOBB(pt, obb);
         }) || null;
+    };
+
+    const isPointCovered = (pt: Point): boolean => {
+        if (beamObbs.some(b => b.obb && isPointInOBB(pt, b.obb))) return true;
+        return obstacleBounds.some(b => isPointInBounds(pt, b));
+    };
+
+    const geoInfoByIndex = new Map<number, string>();
+    (activeProject.beamStep2GeoInfos || []).forEach(info => geoInfoByIndex.set(info.beamIndex, info.id));
+
+    const isConnectedAlongAxis = (a: typeof beamObbs[number], b: typeof beamObbs[number]): boolean => {
+
+        if (!a.obb || !b.obb) return false;
+        // Use closest endpoints along axis to test continuity (no empty space between)
+        const endA1 = { x: a.obb.center.x + a.obb.u.x * a.obb.maxT, y: a.obb.center.y + a.obb.u.y * a.obb.maxT };
+        const endA2 = { x: a.obb.center.x + a.obb.u.x * a.obb.minT, y: a.obb.center.y + a.obb.u.y * a.obb.minT };
+        const endB1 = { x: b.obb.center.x + b.obb.u.x * b.obb.maxT, y: b.obb.center.y + b.obb.u.y * b.obb.maxT };
+        const endB2 = { x: b.obb.center.x + b.obb.u.x * b.obb.minT, y: b.obb.center.y + b.obb.u.y * b.obb.minT };
+
+        const pair1 = distance(endA1, endB2);
+        const pair2 = distance(endA2, endB1);
+        const [pA, pB] = pair1 <= pair2 ? [endA1, endB2] : [endA2, endB1];
+
+        const totalDist = distance(pA, pB);
+        const steps = Math.max(5, Math.ceil(totalDist / 50));
+        const aId = geoInfoByIndex.get(a.index) || `IDX-${a.index}`;
+        const bId = geoInfoByIndex.get(b.index) || `IDX-${b.index}`;
+        for (let s = 0; s <= steps; s++) {
+            const t = s / steps;
+            const pt = { x: pA.x + (pB.x - pA.x) * t, y: pA.y + (pB.y - pA.y) * t };
+            const covered = isPointCovered(pt);
+            if (!covered) {
+                return false;
+            }
+        }
+        return true;
     };
 
     const markDebug = (pt: Point | null, text: string, angle?: number | null) => {
@@ -999,7 +1078,7 @@ export const runBeamAttributeMounting = (
     });
 
     // 5. Propagation (Collinear beams on same axis)
-    // Group beams by axis orientation and position
+    // Group beams by axis orientation and position (only propagate to beams without attrs and with no large gaps)
     const sortedBeams = [...beamObbs].sort((a, b) => {
         const angA = Math.atan2(a.obb!.u.y, a.obb!.u.x);
         const angB = Math.atan2(b.obb!.u.y, b.obb!.u.x);
@@ -1028,7 +1107,13 @@ export const runBeamAttributeMounting = (
 
             if (Math.abs(perpDistA - perpDistB) > 200) break; // Not collinear
 
-            group.push(curr);
+            // Only consider unlabeled beams for propagation; ensure path is covered by beams/obstacles
+            const connected = isConnectedAlongAxis(base, curr);
+            // if (!connected) break;
+            // group.push(curr);
+            if (connected) {
+                group.push(curr);
+            }
             j++;
         }
 
@@ -1052,7 +1137,17 @@ export const runBeamAttributeMounting = (
             });
         }
 
-        i = j;
+        i++;
+    }
+
+    const unlabeledBeams = beamObbs.filter(b => !b.attr);
+    if (unlabeledBeams.length > 0) {
+        console.warn('Beams without labels/propagation:', unlabeledBeams.map(b => ({
+            index: b.index,
+            center: b.obb?.center,
+            angle: b.obb ? (Math.atan2(b.obb.u.y, b.obb.u.x) * 180) / Math.PI : null,
+            bounds: b.obb ? { minT: b.obb.minT, maxT: b.obb.maxT, halfWidth: b.obb.halfWidth } : null
+        })));
     }
 
     // 6. Generate Text Entities by reusing original labels (append code on new line)
@@ -1064,11 +1159,12 @@ export const runBeamAttributeMounting = (
         if (finalAngle > 90 || finalAngle < -90) finalAngle += 180;
         if (finalAngle > 180) finalAngle -= 360;
         const spanText = b.attr.span ? `(${b.attr.span})` : '';
+        const geoId = geoInfoByIndex.get(idx) || `B2-${idx}`;
 
         updatedLabels.push({
             type: EntityType.TEXT,
             layer: resultLayer,
-            text: `B2-${idx + 1}\n${b.attr.code}${spanText}`,
+            text: `${geoId}\n${b.attr.code}${spanText}`,
             start: b.obb!.center,
             radius: 160,
             startAngle: finalAngle
@@ -1103,6 +1199,34 @@ export const runBeamAttributeMounting = (
             };
         }));
     }
+
+    // Save step3 ATTR result snapshot
+    setProjects(prev => prev.map(p => {
+        if (p.id !== activeProject.id) return p;
+        const infos: import('../types').BeamStep3AttrInfo[] = beamObbs.map((b, idx) => {
+            const ent = attrBeams[idx];
+            const bounds = getEntityBounds(ent);
+            const spanText = b.attr?.span;
+            const angle = b.obb ? (Math.atan2(b.obb.u.y, b.obb.u.x) * 180) / Math.PI : undefined;
+            return {
+                id: `B3-${idx}`,
+                layer: resultLayer,
+                shape: 'rect',
+                vertices: ent.vertices || [],
+                bounds: bounds ? { startX: bounds.minX, startY: bounds.minY, endX: bounds.maxX, endY: bounds.maxY } : { startX: 0, startY: 0, endX: 0, endY: 0 },
+                center: getCenter(ent) || undefined,
+                radius: undefined,
+                angle,
+                beamIndex: idx,
+                code: b.attr?.code || '',
+                span: spanText,
+                width: b.attr?.width,
+                height: b.attr?.height,
+                rawLabel: b.attr?.rawLabel || ''
+            };
+        });
+        return { ...p, beamStep3AttrInfos: infos };
+    }));
 
     console.log(`Matched ${matchCount} labels. Propagated to full axes.`);
 };

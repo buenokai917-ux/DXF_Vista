@@ -100,6 +100,47 @@ export interface BeamLabelInfo {
   notes?: string;
 }
 
+export type BeamShapeType = 'rect' | 'poly' | 'circle' | 'compound';
+
+export interface BeamShapePart {
+  shape: BeamShapeType;
+  vertices?: Point[];
+  center?: Point;
+  radius?: number;
+}
+
+export interface BeamRectInfo {
+  id: string;
+  layer: string;
+  shape: BeamShapeType;
+  vertices: Point[];
+  bounds: { startX: number; startY: number; endX: number; endY: number };
+  center?: Point; // for circles/compounds
+  radius?: number; // for circles
+  parts?: BeamShapePart[]; // for compound shapes
+  angle?: number; // orientation in degrees, optional
+}
+
+export interface BeamStep2GeoInfo extends BeamRectInfo {
+  beamIndex: number;
+}
+
+export interface BeamStep3AttrInfo extends BeamRectInfo {
+  beamIndex: number;
+  code: string;
+  span?: string | null;
+  width?: number;
+  height?: number;
+  rawLabel: string;
+}
+
+export type IntersectionShape = 'C' | 'T' | 'L';
+
+export interface BeamIntersectionInfo extends BeamRectInfo {
+  junction: IntersectionShape; // L/T/C topology
+  beamIndexes: number[]; // references beamStep2GeoInfo.beamIndex
+}
+
 export type LayerColors = { [key: string]: string };
 
 export type AnalysisDomain = 'STRUCTURE' | 'LANDSCAPE' | 'ELECTRICAL';
@@ -112,4 +153,7 @@ export interface ProjectFile {
   filledLayers: Set<string>;
   splitRegions: ViewportRegion[] | null;
   beamLabels?: BeamLabelInfo[];
+  beamStep2GeoInfos?: BeamStep2GeoInfo[];
+  beamStep2InterInfos?: BeamIntersectionInfo[];
+  beamStep3AttrInfos?: BeamStep3AttrInfo[];
 }
