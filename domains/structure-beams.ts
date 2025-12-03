@@ -1231,13 +1231,242 @@ export const runBeamAttributeMounting = (
     console.log(`Matched ${matchCount} labels. Propagated to full axes.`);
 };
 
+// --- STEP 4: TOPOLOGY MERGE ---
+// Logic: Resolve intersections by trimming Secondary beams and keeping Main beams.
+// Rules: 
+// 1. Width (Wider = Main)
+// 2. Height (Higher = Main)
+// 3. Code (WKL > KL > LL > XL > L)
+// 4. Length (Longer = Main)
+
 export const runBeamTopologyMerge = (
     activeProject: ProjectFile,
     projects: ProjectFile[],
     setProjects: React.Dispatch<React.SetStateAction<ProjectFile[]>>,
     setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>
 ) => {
-    console.log("Step 4: Topology Merge");
+    const prevLayer = 'BEAM_STEP3_ATTR';
+    const resultLayer = 'BEAM_STEP4_LOGIC';
+    
+    // 1. Load Data
+    const infos = activeProject.beamStep3AttrInfos;
+    const intersections = activeProject.beamStep2InterInfos;
+    
+    if (!infos || infos.length === 0 || !intersections || intersections.length === 0) {
+        alert("Missing Step 3 attributes or Step 2 intersections. Please run previous steps.");
+        return;
+    }
+
+    // Working Set: Map beamIndex to a mutable structure tracking cuts
+    // cuts: list of [tMin, tMax] intervals to remove relative to beam's center along U-axis
+    const beamCuts = new Map<number, Array<{min: number, max: number}>>();
+    
+    // Helper to get beam priority score
+    const getCodePriority = (code: string | undefined): number => {
+        if (!code) return 0;
+        const c = code.toUpperCase();
+        if (c.startsWith('WKL')) return 5;
+        if (c.startsWith('KL')) return 4;
+        if (c.startsWith('LL')) return 3;
+        if (c.startsWith('XL')) return 2;
+        if (c.startsWith('L')) return 1;
+        return 0;
+    };
+
+    const getBeamLen = (info: import('../types').BeamStep3AttrInfo): number => {
+         // reconstruct OBB length approx
+         // Since we don't have OBB directly stored in info, we recompute from vertices
+         const poly: DxfEntity = { type: EntityType.LWPOLYLINE, vertices: info.vertices, closed: true, layer: 'TEMP' };
+         const obb = computeOBB(poly);
+         return obb ? obb.halfLen * 2 : 0;
+    };
+
+    // 2. Iterate Intersections
+    intersections.forEach(inter => {
+        const involvedIndices = inter.beamIndexes;
+        if (involvedIndices.length < 2) return;
+
+        // Fetch beam objects
+        const beams = involvedIndices.map(idx => {
+            const info = infos.find(i => i.beamIndex === idx);
+            return info ? { idx, info, priority: getCodePriority(info.code), len: getBeamLen(info) } : null;
+        }).filter(b => b !== null) as { idx: number, info: import('../types').BeamStep3AttrInfo, priority: number, len: number }[];
+
+        if (beams.length < 2) return;
+
+        // Sort by Rules: Width > Height > Code > Length
+        beams.sort((a, b) => {
+             const wA = a.info.width || 0;
+             const wB = b.info.width || 0;
+             if (Math.abs(wA - wB) > 10) return wB - wA; // Wider first
+
+             const hA = a.info.height || 0;
+             const hB = b.info.height || 0;
+             if (Math.abs(hA - hB) > 10) return hB - hA; // Higher first
+
+             if (a.priority !== b.priority) return b.priority - a.priority; // Better code first
+
+             return b.len - a.len; // Longer first
+        });
+
+        // Winner is Main, others are Secondary
+        const main = beams[0];
+        const secondaries = beams.slice(1);
+
+        // Apply Cuts to Secondaries
+        // Cut zone is the intersection rectangle projected onto the secondary beam
+        // Intersection Bounds:
+        const iBounds = inter.bounds;
+        const iPolyPoints = [
+            { x: iBounds.startX, y: iBounds.startY },
+            { x: iBounds.endX, y: iBounds.startY },
+            { x: iBounds.endX, y: iBounds.endY },
+            { x: iBounds.startX, y: iBounds.endY }
+        ];
+
+        secondaries.forEach(sec => {
+            const poly: DxfEntity = { type: EntityType.LWPOLYLINE, vertices: sec.info.vertices, closed: true, layer: 'TEMP' };
+            const obb = computeOBB(poly);
+            if (!obb) return;
+
+            // Project intersection vertices onto beam's U axis relative to center
+            let minP = Infinity;
+            let maxP = -Infinity;
+
+            const project = (p: Point) => (p.x - obb.center.x) * obb.u.x + (p.y - obb.center.y) * obb.u.y;
+
+            iPolyPoints.forEach(p => {
+                 const t = project(p);
+                 minP = Math.min(minP, t);
+                 maxP = Math.max(maxP, t);
+            });
+
+            // Clamp cut to beam length? Not strictly necessary if we use interval math, 
+            // but good for sanity.
+            // Beam valid range is [obb.minT, obb.maxT]
+            // We want to remove [minP, maxP]
+            
+            if (!beamCuts.has(sec.idx)) beamCuts.set(sec.idx, []);
+            beamCuts.get(sec.idx)!.push({ min: minP, max: maxP });
+        });
+    });
+
+    // 3. Reconstruct Beams
+    const finalEntities: DxfEntity[] = [];
+    const finalLabels: DxfEntity[] = [];
+
+    infos.forEach(info => {
+        const poly: DxfEntity = { type: EntityType.LWPOLYLINE, vertices: info.vertices, closed: true, layer: 'TEMP' };
+        const obb = computeOBB(poly);
+        if (!obb) return;
+
+        const cuts = beamCuts.get(info.beamIndex);
+        
+        // Original Segment Range
+        let segments = [{ start: obb.minT, end: obb.maxT }];
+
+        if (cuts && cuts.length > 0) {
+            // Merge cuts
+            cuts.sort((a, b) => a.min - b.min);
+            const mergedCuts: {min: number, max: number}[] = [];
+            if (cuts.length > 0) {
+                let curr = cuts[0];
+                for(let i=1; i<cuts.length; i++) {
+                    if (cuts[i].min < curr.max) {
+                        curr.max = Math.max(curr.max, cuts[i].max);
+                    } else {
+                        mergedCuts.push(curr);
+                        curr = cuts[i];
+                    }
+                }
+                mergedCuts.push(curr);
+            }
+
+            // Subtract cuts from segments
+            for (const cut of mergedCuts) {
+                const nextSegments: {start: number, end: number}[] = [];
+                for (const seg of segments) {
+                    // Case 1: Cut strictly inside segment -> split
+                    if (cut.min > seg.start && cut.max < seg.end) {
+                        nextSegments.push({ start: seg.start, end: cut.min });
+                        nextSegments.push({ start: cut.max, end: seg.end });
+                    }
+                    // Case 2: Cut covers start -> trim start
+                    else if (cut.min <= seg.start && cut.max > seg.start && cut.max < seg.end) {
+                         nextSegments.push({ start: cut.max, end: seg.end });
+                    }
+                    // Case 3: Cut covers end -> trim end
+                    else if (cut.min > seg.start && cut.min < seg.end && cut.max >= seg.end) {
+                        nextSegments.push({ start: seg.start, end: cut.min });
+                    }
+                    // Case 4: Cut covers whole segment -> remove
+                    else if (cut.min <= seg.start && cut.max >= seg.end) {
+                        // Drop
+                    }
+                    // Case 5: No overlap -> keep
+                    else {
+                        nextSegments.push(seg);
+                    }
+                }
+                segments = nextSegments;
+            }
+        }
+
+        // Create Polygons for segments
+        const { center, u, v, halfWidth } = obb;
+
+        segments.forEach(seg => {
+            if (seg.end - seg.start < 10) return; // Skip tiny fragments
+
+            const p1 = { x: center.x + u.x * seg.start + v.x * halfWidth, y: center.y + u.y * seg.start + v.y * halfWidth };
+            const p2 = { x: center.x + u.x * seg.start - v.x * halfWidth, y: center.y + u.y * seg.start - v.y * halfWidth };
+            const p3 = { x: center.x + u.x * seg.end - v.x * halfWidth, y: center.y + u.y * seg.end - v.y * halfWidth };
+            const p4 = { x: center.x + u.x * seg.end + v.x * halfWidth, y: center.y + u.y * seg.end + v.y * halfWidth };
+
+            finalEntities.push({
+                type: EntityType.LWPOLYLINE,
+                layer: resultLayer,
+                closed: true,
+                vertices: [p1, p2, p3, p4]
+            });
+            
+            // Add Label if fragment is long enough
+            if (seg.end - seg.start > 500) {
+                 const midT = (seg.start + seg.end) / 2;
+                 const midPt = { x: center.x + u.x * midT, y: center.y + u.y * midT };
+                 const angleDeg = Math.atan2(u.y, u.x) * 180 / Math.PI;
+                 let finalAngle = angleDeg;
+                 if (finalAngle > 90 || finalAngle < -90) finalAngle += 180;
+                 if (finalAngle > 180) finalAngle -= 360;
+
+                 const spanText = info.span ? `(${info.span})` : '';
+                 finalLabels.push({
+                    type: EntityType.TEXT,
+                    layer: resultLayer,
+                    text: `${info.code}${spanText}`,
+                    start: midPt,
+                    radius: 160,
+                    startAngle: finalAngle
+                 });
+            }
+        });
+    });
+    
+    // 4. Update Project
+    updateProject(
+        activeProject,
+        setProjects,
+        setLayerColors,
+        resultLayer,
+        [...finalEntities, ...finalLabels],
+        '#ec4899', // Pink (reusing step 5 color or unique)
+        ['AXIS', 'COLU_CALC', 'WALL_CALC'],
+        true,
+        undefined,
+        [prevLayer, 'BEAM_STEP2_INTER_SECTION'] 
+    );
+    
+    console.log(`Step 4: Topology Merge Complete. Generated ${finalEntities.length} fragments.`);
 };
 
 export const runBeamPropagation = (
@@ -1248,9 +1477,3 @@ export const runBeamPropagation = (
 ) => {
     console.log("Step 5: Propagation");
 };
-
-
-
-
-
-
