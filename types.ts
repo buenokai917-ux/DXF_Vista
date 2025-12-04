@@ -137,6 +137,7 @@ export interface BeamStep3AttrInfo extends BeamRectInfo {
 
 export interface BeamStep4TopologyInfo extends BeamRectInfo {
   beamIndex: number;
+  parentBeamIndex: number;
   code: string;
   span?: string | null;
   width: number;

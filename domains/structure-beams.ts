@@ -1,5 +1,9 @@
 
 
+
+
+
+
 import React from 'react';
 import { jsPDF } from 'jspdf';
 import { DxfEntity, EntityType, Point, Bounds, ProjectFile } from '../types';
@@ -1358,6 +1362,9 @@ export const runBeamTopologyMerge = (
     const finalLabels: DxfEntity[] = [];
     const step4Infos: import('../types').BeamStep4TopologyInfo[] = [];
 
+    // Counter for new Beam Indices after split
+    let globalBeamCounter = 0;
+
     infos.forEach(info => {
         const poly: DxfEntity = { type: EntityType.LWPOLYLINE, vertices: info.vertices, closed: true, layer: 'TEMP' };
         const obb = computeOBB(poly);
@@ -1435,9 +1442,13 @@ export const runBeamTopologyMerge = (
                 vertices: vertices
             });
             
+            // Increment ID
+            const newBeamIndex = ++globalBeamCounter;
+
             // Calculations
             const segLength = seg.end - seg.start;
-            const segVol = (segLength / 1000) * ((info.width || 0) / 1000) * ((info.height || 0) / 1000);
+            // Calculate Volume in mm^3 to preserve precision
+            const segVol = segLength * (info.width || 0) * (info.height || 0);
             
             // Add Label if fragment is long enough
             if (segLength > 500) {
@@ -1449,7 +1460,7 @@ export const runBeamTopologyMerge = (
                  if (finalAngle > 180) finalAngle -= 360;
 
                  const lengthText = Math.round(segLength).toString();
-                 const labelText = `${info.beamIndex} ${info.code || 'UNK'}\n${lengthText}X${info.width || 0}X${info.height || 0}`;
+                 const labelText = `${newBeamIndex} ${info.code || 'UNK'}\n${lengthText}X${info.width || 0}X${info.height || 0}`;
 
                  finalLabels.push({
                     type: EntityType.TEXT,
@@ -1464,7 +1475,7 @@ export const runBeamTopologyMerge = (
             // Save Info
             const segBounds = getEntityBounds({ type: EntityType.LWPOLYLINE, layer: resultLayer, vertices: vertices });
             step4Infos.push({
-                id: info.id, // Reuse ID base, usually not unique now if split
+                id: info.id, // Keep base ID ref, though geometry changed
                 layer: resultLayer,
                 shape: 'rect',
                 vertices: vertices,
@@ -1472,14 +1483,15 @@ export const runBeamTopologyMerge = (
                 center: { x: center.x + u.x * ((seg.start+seg.end)/2), y: center.y + u.y * ((seg.start+seg.end)/2) },
                 radius: undefined,
                 angle: info.angle,
-                beamIndex: info.beamIndex,
+                beamIndex: newBeamIndex,
+                parentBeamIndex: info.beamIndex, // Track lineage
                 code: info.code,
                 span: info.span,
                 width: info.width || 0,
                 height: info.height || 0,
                 rawLabel: info.rawLabel,
                 length: Math.round(segLength),
-                volume: parseFloat(segVol.toFixed(3))
+                volume: segVol // mm^3
             });
         });
     });
@@ -1520,9 +1532,11 @@ export const runBeamCalculation = (
         return;
     }
 
-    // 2. Calculate Volumes
+    // 2. Identify Views and Group Beams
+    const views = activeProject.splitRegions || [];
     interface BeamStat {
         id: string;
+        parentId: string;
         code: string;
         width: number;
         height: number;
@@ -1530,69 +1544,148 @@ export const runBeamCalculation = (
         volume: number;
     }
 
-    const stats: BeamStat[] = [];
-    let totalVolume = 0;
+    const grouped: Record<string, BeamStat[]> = {};
+    const viewVolumes: Record<string, number> = {};
+    let totalProjectVolume = 0;
 
     infos.forEach(info => {
         if (info.volume > 0) {
-            stats.push({
-                id: info.beamIndex.toString(), // Using numeric index as ID for report
+            // Find View Name
+            let viewName = "Uncategorized";
+            
+            // Find center for hit testing against regions
+            let center: Point | null = info.center || null;
+            if (!center && info.vertices && info.vertices.length > 0) {
+                center = getCenter({ type: EntityType.LWPOLYLINE, vertices: info.vertices, layer: 'temp' });
+            }
+
+            if (center) {
+                const foundRegion = views.find(v => isPointInBounds(center!, v.bounds));
+                if (foundRegion) {
+                    // Use a clean ASCII name to avoid garbage text in PDF
+                    if (foundRegion.info) {
+                        viewName = `Region ${foundRegion.info.index}`;
+                    } else {
+                        // Sanitize title to ASCII only for safety, or just use generic index
+                        viewName = `Region ${views.indexOf(foundRegion) + 1}`;
+                    }
+                }
+            }
+
+            if (!grouped[viewName]) {
+                grouped[viewName] = [];
+                viewVolumes[viewName] = 0;
+            }
+
+            // CRITICAL FIX: Use Integer Arithmetic for Volume to avoid float precision errors
+            const iLen = Math.round(info.length);
+            const iW = Math.round(info.width);
+            const iH = Math.round(info.height);
+            const iVol = iLen * iW * iH;
+
+            grouped[viewName].push({
+                id: info.beamIndex.toString(),
+                parentId: info.parentBeamIndex.toString(),
                 code: info.code,
-                width: info.width,
-                height: info.height,
-                length: info.length,
-                volume: info.volume
+                width: iLen, 
+                height: iH,
+                length: iLen,
+                volume: iVol
             });
-            totalVolume += info.volume;
+            // Fix field mapping above: width: iW
+            grouped[viewName][grouped[viewName].length - 1].width = iW; 
+
+            viewVolumes[viewName] += iVol;
+            totalProjectVolume += iVol;
         }
     });
 
     // 3. Generate PDF
     const doc = new jsPDF();
+    
+    // Header
     doc.setFontSize(16);
-    doc.text(`Beam Calculation Report: ${activeProject.name}`, 14, 20);
+    doc.text("Structural Beam Quantity Survey", 14, 20); 
     
     doc.setFontSize(12);
-    doc.text(`Total Volume: ${totalVolume.toFixed(3)} m³`, 14, 30);
+    // Convert mm^3 to m^3 for summary display
+    const volM3 = (totalProjectVolume / 1e9).toFixed(3);
+    doc.text(`Total Project Volume: ${volM3} m3`, 14, 30);
 
     let y = 40;
-    doc.setFontSize(10);
-    doc.text("ID", 14, y);
-    doc.text("Code", 40, y);
-    doc.text("W (mm)", 80, y);
-    doc.text("H (mm)", 100, y);
-    doc.text("Len (mm)", 120, y);
-    doc.text("Vol (m³)", 150, y);
     
-    doc.line(14, y + 2, 190, y + 2);
-    y += 8;
+    // Sort views by name to keep order
+    const sortedViewNames = Object.keys(grouped).sort();
 
-    // Grouping optional? No, list all fragments as they might be distinct physical pieces now
-    stats.forEach((item, index) => {
-        if (y > 270) {
+    sortedViewNames.forEach(viewName => {
+        // Sort stats: Group by Code (A-Z), then ID (Ascending)
+        const stats = grouped[viewName].sort((a, b) => {
+             const cA = a.code || "";
+             const cB = b.code || "";
+             const codeDiff = cA.localeCompare(cB, undefined, { numeric: true, sensitivity: 'base' });
+             if (codeDiff !== 0) return codeDiff;
+             return parseInt(a.id, 10) - parseInt(b.id, 10);
+        });
+
+        const vVol = viewVolumes[viewName];
+
+        // Check page break for section header
+        if (y > 260) {
             doc.addPage();
             y = 20;
-            // Header again
-            doc.text("ID", 14, y);
-            doc.text("Code", 40, y);
-            doc.text("W (mm)", 80, y);
-            doc.text("H (mm)", 100, y);
-            doc.text("Len (mm)", 120, y);
-            doc.text("Vol (m³)", 150, y);
-            doc.line(14, y + 2, 190, y + 2);
-            y += 8;
         }
+
+        // Section Header
+        doc.setFontSize(12);
+        doc.setFont(undefined, 'bold');
+        // Clean header string
+        doc.text(`${viewName} - Vol: ${(vVol/1e9).toFixed(3)} m3`, 14, y);
+        y += 8;
         
-        doc.text(item.id, 14, y);
-        doc.text(item.code, 40, y);
-        doc.text(item.width.toString(), 80, y);
-        doc.text(item.height.toString(), 100, y);
-        doc.text(item.length.toString(), 120, y);
-        doc.text(item.volume.toFixed(3), 150, y);
+        // Table Header
+        doc.setFontSize(9);
+        doc.setFont(undefined, 'normal');
+        doc.text("ID", 14, y);
+        // REMOVED PID Column
+        doc.text("Code", 30, y);
+        doc.text("Len (mm)", 75, y);
+        doc.text("W (mm)", 95, y);
+        doc.text("H (mm)", 115, y);
+        doc.text("Vol (mm3)", 135, y);
+        doc.line(14, y + 2, 190, y + 2);
+        y += 8;
+
+        stats.forEach((item) => {
+            if (y > 275) {
+                doc.addPage();
+                y = 20;
+                // Header repeat
+                doc.setFontSize(9);
+                doc.text("ID", 14, y);
+                doc.text("Code", 30, y);
+                doc.text("Len (mm)", 75, y);
+                doc.text("W (mm)", 95, y);
+                doc.text("H (mm)", 115, y);
+                doc.text("Vol (mm3)", 135, y);
+                doc.line(14, y + 2, 190, y + 2);
+                y += 8;
+            }
+            
+            doc.text(item.id, 14, y);
+            // doc.text(item.parentId, 25, y); // Removed data draw
+            doc.text(item.code, 30, y);
+            doc.text(item.length.toString(), 75, y);
+            doc.text(item.width.toString(), 95, y);
+            doc.text(item.height.toString(), 115, y);
+            // Integer volume
+            doc.text(item.volume.toLocaleString(), 135, y);
+            
+            y += 5;
+        });
         
-        y += 6;
+        y += 10; // Spacing between sections
     });
 
-    doc.save(`${activeProject.name.replace('.dxf', '')}_Beam_Calculation.pdf`);
-    console.log(`Calculation Complete. Total Volume: ${totalVolume.toFixed(3)} m3`);
+    doc.save(`Beam_Calculation_Report.pdf`);
+    console.log(`Calculation Complete. Total Volume: ${volM3} m3`);
 };
