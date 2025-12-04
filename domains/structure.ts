@@ -1,3 +1,1 @@
-export * from './structure-views';
-export * from './structure-verticals';
-export * from './structure-beams';
+// File removed during refactor to domains/structure/ directory

@@ -1,9 +1,9 @@
 
 import React from 'react';
 import { ProjectFile, SemanticLayer } from '../../types';
-import { runCalculateSplitRegions, runMergeViews } from '../../domains/structure-views';
-import { runCalculateColumns, runCalculateWalls } from '../../domains/structure-verticals';
-import { runBeamRawGeneration, runBeamIntersectionProcessing, runBeamAttributeMounting, runBeamTopologyMerge, runBeamCalculation } from '../../domains/structure-beams';
+import { runCalculateSplitRegions, runMergeViews } from '../../domains/structure/views';
+import { runCalculateColumns, runCalculateWalls } from '../../domains/structure/verticals';
+import { runBeamRawGeneration, runBeamIntersectionProcessing, runBeamAttributeMounting, runBeamTopologyMerge, runBeamCalculation } from '../../domains/structure/beams';
 import { Button } from '../Button';
 import { Grid, Merge, Box, ArrowRightLeft, AlignJustify, Tag, GitMerge, Spline, Calculator } from 'lucide-react';
 import { LayerConfigPanel } from './LayerConfigPanel';
