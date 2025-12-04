@@ -1,4 +1,4 @@
 
 export * from './views';
 export * from './verticals';
-export * from './beams';
+export * from './beams/index';

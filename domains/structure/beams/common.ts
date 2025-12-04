@@ -604,6 +604,16 @@ export const detectIntersections = (beams: DxfEntity[]): { intersections: DxfEnt
         let shape: IntersectionShape = 'L';
         if (arms === 4) shape = 'C';
         else if (arms === 3) shape = 'T';
+        
+        let tAngle: number | undefined = undefined;
+        if (shape === 'T') {
+            // Missing direction determines stem direction
+            if (!dirs.down) tAngle = 0;
+            else if (!dirs.left) tAngle = 90;
+            else if (!dirs.up) tAngle = 180;
+            else if (!dirs.right) tAngle = 270;
+            if (tAngle === undefined) tAngle = 0;
+        }
 
         const rect: DxfEntity = {
             type: EntityType.LWPOLYLINE,
@@ -618,14 +628,19 @@ export const detectIntersections = (beams: DxfEntity[]): { intersections: DxfEnt
         };
         intersections.push(rect);
 
+        const labelText = shape === 'T'
+            ? `T-${counter}/${tAngle ?? 0}`
+            : `${shape}-${counter}`;
+
         labels.push({
             type: EntityType.TEXT,
             layer: 'BEAM_STEP2_INTER_SECTION',
             start: center,
-            text: `${shape}-${counter++}`,
+            text: labelText,
             radius: 250,
             startAngle: 0
         });
+        counter++;
 
         infos.push({
             id: `INTER-${counter}`,
@@ -642,7 +657,7 @@ export const detectIntersections = (beams: DxfEntity[]): { intersections: DxfEnt
             radius: undefined,
             parts: undefined,
             junction: shape,
-            angle: undefined,
+            angle: tAngle,
             beamIndexes: Array.from(val.beams)
         });
     });
