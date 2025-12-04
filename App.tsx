@@ -10,6 +10,7 @@ import { Button } from './components/Button';
 import { renderDxfToCanvas } from './utils/renderUtils';
 import { AnalysisSidebar } from './components/AnalysisSidebar';
 import { Layers, Image as ImageIcon, FileText, Settings, X, RefreshCw, Search, Plus, File as FileIcon, ChevronUp, ChevronDown, Hammer } from 'lucide-react';
+import { getStoredConfig, saveStoredConfig } from './utils/configStorage';
 
 // Standard CAD Colors (Index 1-7 + Grays + Common)
 const CAD_COLORS = [
@@ -209,13 +210,17 @@ const App: React.FC = () => {
               newColors[layer] = PALETTE[colorIndex];
            });
 
+           // PRIORITY: Check LocalStorage for existing config for this file
+           const storedConfig = getStoredConfig(file.name);
+           const detectedConfig = autoDetectLayers(parsed.layers, usedLayers);
+
            newProjects.push({
              id: Math.random().toString(36).substr(2, 9),
              name: file.name,
              data: parsed,
              activeLayers: new Set(parsed.layers),
              filledLayers: new Set(),
-             layerConfig: autoDetectLayers(parsed.layers, usedLayers),
+             layerConfig: storedConfig || detectedConfig, // Prefer stored
              splitRegions: null
            });
         }));
@@ -280,16 +285,21 @@ const App: React.FC = () => {
         if (p.id === activeProject.id) {
             const currentConfig = p.layerConfig[pickingTarget] || [];
             // Toggle layer in config
-            const newConfig = currentConfig.includes(layer) 
+            const newConfigLayers = currentConfig.includes(layer) 
                 ? currentConfig.filter(l => l !== layer)
                 : [...currentConfig, layer];
             
+            const fullConfig = {
+                ...p.layerConfig,
+                [pickingTarget]: newConfigLayers
+            };
+
+            // PERSISTENCE: Save to LocalStorage immediately
+            saveStoredConfig(p.name, fullConfig);
+
             return {
                 ...p,
-                layerConfig: {
-                    ...p.layerConfig,
-                    [pickingTarget]: newConfig
-                }
+                layerConfig: fullConfig
             };
         }
         return p;

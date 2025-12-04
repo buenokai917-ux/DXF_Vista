@@ -1,7 +1,7 @@
-
-import React from 'react';
+import React, { useRef } from 'react';
 import { ProjectFile, SemanticLayer } from '../../types';
-import { Target, Check, Trash2, Eye } from 'lucide-react';
+import { Target, Check, Trash2, Eye, Download, Upload } from 'lucide-react';
+import { saveStoredConfig, exportConfigsToJson, importConfigsFromJson } from '../../utils/configStorage';
 
 interface LayerConfigPanelProps {
     activeProject: ProjectFile;
@@ -17,6 +17,8 @@ export const LayerConfigPanel: React.FC<LayerConfigPanelProps> = ({
     setProjects
 }) => {
 
+    const fileInputRef = useRef<HTMLInputElement>(null);
+
     const rows = [
         { key: SemanticLayer.AXIS, label: 'Axis Layer' },
         { key: SemanticLayer.COLUMN, label: 'Column Layer' },
@@ -31,12 +33,18 @@ export const LayerConfigPanel: React.FC<LayerConfigPanelProps> = ({
         setProjects(prev => prev.map(p => {
             if (p.id !== activeProject.id) return p;
             const current = p.layerConfig[semantic] || [];
+            const newConfig = current.filter(l => l !== layerName);
+            const fullConfig = {
+                ...p.layerConfig,
+                [semantic]: newConfig
+            };
+            
+            // Persist
+            saveStoredConfig(p.name, fullConfig);
+
             return {
                 ...p,
-                layerConfig: {
-                    ...p.layerConfig,
-                    [semantic]: current.filter(l => l !== layerName)
-                }
+                layerConfig: fullConfig
             };
         }));
     };
@@ -44,12 +52,18 @@ export const LayerConfigPanel: React.FC<LayerConfigPanelProps> = ({
     const clearAllLayers = (semantic: SemanticLayer) => {
         setProjects(prev => prev.map(p => {
             if (p.id !== activeProject.id) return p;
+            
+            const fullConfig = {
+                ...p.layerConfig,
+                [semantic]: []
+            };
+
+            // Persist
+            saveStoredConfig(p.name, fullConfig);
+
             return {
                 ...p,
-                layerConfig: {
-                    ...p.layerConfig,
-                    [semantic]: []
-                }
+                layerConfig: fullConfig
             };
         }));
     };
@@ -74,6 +88,29 @@ export const LayerConfigPanel: React.FC<LayerConfigPanelProps> = ({
         }));
     };
 
+    const handleImportClick = () => {
+        if (fileInputRef.current) fileInputRef.current.click();
+    };
+
+    const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (file) {
+            importConfigsFromJson(file, (mergedConfig) => {
+                setProjects(prev => prev.map(p => {
+                    // Update any loaded project that matches a key in the imported config
+                    if (mergedConfig[p.name]) {
+                        return {
+                            ...p,
+                            layerConfig: mergedConfig[p.name]
+                        };
+                    }
+                    return p;
+                }));
+            });
+        }
+        e.target.value = '';
+    };
+
     return (
         <div className="space-y-2">
             <div className="flex items-center justify-between">
@@ -81,12 +118,31 @@ export const LayerConfigPanel: React.FC<LayerConfigPanelProps> = ({
                     <span className="w-4 h-4 rounded-full bg-slate-800 text-slate-300 flex items-center justify-center mr-2 text-[9px]">0</span>
                     Layer Configuration
                 </h3>
-                <button 
-                    onClick={showAllLayers}
-                    className="text-[9px] text-blue-400 hover:text-blue-300 flex items-center gap-1"
-                >
-                    <Eye size={10} /> Show All Layers
-                </button>
+                <div className="flex gap-2">
+                     <button 
+                        onClick={handleImportClick}
+                        className="text-[9px] text-slate-400 hover:text-white flex items-center gap-1"
+                        title="Import JSON Configuration"
+                    >
+                        <Upload size={10} /> Import
+                    </button>
+                    <input type="file" accept=".json" ref={fileInputRef} className="hidden" onChange={handleFileChange}/>
+
+                    <button 
+                        onClick={exportConfigsToJson}
+                        className="text-[9px] text-slate-400 hover:text-white flex items-center gap-1"
+                        title="Export JSON Configuration"
+                    >
+                        <Download size={10} /> Export
+                    </button>
+
+                    <button 
+                        onClick={showAllLayers}
+                        className="text-[9px] text-blue-400 hover:text-blue-300 flex items-center gap-1 ml-2"
+                    >
+                        <Eye size={10} /> Show All
+                    </button>
+                </div>
             </div>
             
             <div className="bg-slate-900/50 rounded-lg p-2 space-y-2 border border-slate-800">
