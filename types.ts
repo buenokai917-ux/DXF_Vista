@@ -1,3 +1,4 @@
+
 export enum EntityType {
   LINE = 'LINE',
   LWPOLYLINE = 'LWPOLYLINE',
@@ -134,6 +135,17 @@ export interface BeamStep3AttrInfo extends BeamRectInfo {
   rawLabel: string;
 }
 
+export interface BeamStep4TopologyInfo extends BeamRectInfo {
+  beamIndex: number;
+  code: string;
+  span?: string | null;
+  width: number;
+  height: number;
+  rawLabel: string;
+  length: number;
+  volume: number;
+}
+
 export type IntersectionShape = 'C' | 'T' | 'L';
 
 export interface BeamIntersectionInfo extends BeamRectInfo {
@@ -156,4 +168,5 @@ export interface ProjectFile {
   beamStep2GeoInfos?: BeamStep2GeoInfo[];
   beamStep2InterInfos?: BeamIntersectionInfo[];
   beamStep3AttrInfos?: BeamStep3AttrInfo[];
+  beamStep4TopologyInfos?: BeamStep4TopologyInfo[];
 }

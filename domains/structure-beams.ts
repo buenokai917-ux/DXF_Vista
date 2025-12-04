@@ -1,4 +1,5 @@
 
+
 import React from 'react';
 import { jsPDF } from 'jspdf';
 import { DxfEntity, EntityType, Point, Bounds, ProjectFile } from '../types';
@@ -1355,6 +1356,7 @@ export const runBeamTopologyMerge = (
     // 3. Reconstruct Beams
     const finalEntities: DxfEntity[] = [];
     const finalLabels: DxfEntity[] = [];
+    const step4Infos: import('../types').BeamStep4TopologyInfo[] = [];
 
     infos.forEach(info => {
         const poly: DxfEntity = { type: EntityType.LWPOLYLINE, vertices: info.vertices, closed: true, layer: 'TEMP' };
@@ -1424,15 +1426,21 @@ export const runBeamTopologyMerge = (
             const p3 = { x: center.x + u.x * seg.end - v.x * halfWidth, y: center.y + u.y * seg.end - v.y * halfWidth };
             const p4 = { x: center.x + u.x * seg.end + v.x * halfWidth, y: center.y + u.y * seg.end + v.y * halfWidth };
 
+            const vertices = [p1, p2, p3, p4];
+            
             finalEntities.push({
                 type: EntityType.LWPOLYLINE,
                 layer: resultLayer,
                 closed: true,
-                vertices: [p1, p2, p3, p4]
+                vertices: vertices
             });
             
+            // Calculations
+            const segLength = seg.end - seg.start;
+            const segVol = (segLength / 1000) * ((info.width || 0) / 1000) * ((info.height || 0) / 1000);
+            
             // Add Label if fragment is long enough
-            if (seg.end - seg.start > 500) {
+            if (segLength > 500) {
                  const midT = (seg.start + seg.end) / 2;
                  const midPt = { x: center.x + u.x * midT, y: center.y + u.y * midT };
                  const angleDeg = Math.atan2(u.y, u.x) * 180 / Math.PI;
@@ -1440,20 +1448,48 @@ export const runBeamTopologyMerge = (
                  if (finalAngle > 90 || finalAngle < -90) finalAngle += 180;
                  if (finalAngle > 180) finalAngle -= 360;
 
-                 const spanText = info.span ? `(${info.span})` : '';
+                 const lengthText = Math.round(segLength).toString();
+                 const labelText = `${info.beamIndex} ${info.code || 'UNK'}\n${lengthText}X${info.width || 0}X${info.height || 0}`;
+
                  finalLabels.push({
                     type: EntityType.TEXT,
                     layer: resultLayer,
-                    text: `${info.code}${spanText}`,
+                    text: labelText,
                     start: midPt,
                     radius: 160,
                     startAngle: finalAngle
                  });
             }
+
+            // Save Info
+            const segBounds = getEntityBounds({ type: EntityType.LWPOLYLINE, layer: resultLayer, vertices: vertices });
+            step4Infos.push({
+                id: info.id, // Reuse ID base, usually not unique now if split
+                layer: resultLayer,
+                shape: 'rect',
+                vertices: vertices,
+                bounds: segBounds ? { startX: segBounds.minX, startY: segBounds.minY, endX: segBounds.maxX, endY: segBounds.maxY } : info.bounds,
+                center: { x: center.x + u.x * ((seg.start+seg.end)/2), y: center.y + u.y * ((seg.start+seg.end)/2) },
+                radius: undefined,
+                angle: info.angle,
+                beamIndex: info.beamIndex,
+                code: info.code,
+                span: info.span,
+                width: info.width || 0,
+                height: info.height || 0,
+                rawLabel: info.rawLabel,
+                length: Math.round(segLength),
+                volume: parseFloat(segVol.toFixed(3))
+            });
         });
     });
     
     // 4. Update Project
+    setProjects(prev => prev.map(p => {
+        if (p.id !== activeProject.id) return p;
+        return { ...p, beamStep4TopologyInfos: step4Infos };
+    }));
+
     updateProject(
         activeProject,
         setProjects,
@@ -1476,85 +1512,13 @@ export const runBeamCalculation = (
     setProjects: React.Dispatch<React.SetStateAction<ProjectFile[]>>,
     setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>
 ) => {
-    // 1. Data Preparation (Duplicate logic from Step 4 to ensure calculation accuracy on fragments)
-    const infos = activeProject.beamStep3AttrInfos;
-    const intersections = activeProject.beamStep2InterInfos;
+    // 1. Data Preparation - Use Step 4 Results
+    const infos = activeProject.beamStep4TopologyInfos;
 
-    if (!infos || infos.length === 0 || !intersections || intersections.length === 0) {
-        alert("Missing beam data. Please run previous steps.");
+    if (!infos || infos.length === 0) {
+        alert("Missing Step 4 topology data. Please run Step 4 first.");
         return;
     }
-
-    const beamCuts = new Map<number, Array<{min: number, max: number}>>();
-
-    // Helper: Code Priority
-    const getCodePriority = (code: string | undefined): number => {
-        if (!code) return 0;
-        const c = code.toUpperCase();
-        if (c.startsWith('WKL')) return 5;
-        if (c.startsWith('KL')) return 4;
-        if (c.startsWith('LL')) return 3;
-        if (c.startsWith('XL')) return 2;
-        if (c.startsWith('L')) return 1;
-        return 0;
-    };
-
-    const getBeamLen = (info: import('../types').BeamStep3AttrInfo): number => {
-         const poly: DxfEntity = { type: EntityType.LWPOLYLINE, vertices: info.vertices, closed: true, layer: 'TEMP' };
-         const obb = computeOBB(poly);
-         return obb ? obb.halfLen * 2 : 0;
-    };
-
-    // Re-calculate Cuts
-    intersections.forEach(inter => {
-        const involvedIndices = inter.beamIndexes;
-        if (involvedIndices.length < 2) return;
-
-        const beams = involvedIndices.map(idx => {
-            const info = infos.find(i => i.beamIndex === idx);
-            return info ? { idx, info, priority: getCodePriority(info.code), len: getBeamLen(info) } : null;
-        }).filter(b => b !== null) as { idx: number, info: import('../types').BeamStep3AttrInfo, priority: number, len: number }[];
-
-        if (beams.length < 2) return;
-
-        beams.sort((a, b) => {
-             const wA = a.info.width || 0;
-             const wB = b.info.width || 0;
-             if (Math.abs(wA - wB) > 10) return wB - wA; 
-             const hA = a.info.height || 0;
-             const hB = b.info.height || 0;
-             if (Math.abs(hA - hB) > 10) return hB - hA; 
-             if (a.priority !== b.priority) return b.priority - a.priority; 
-             return b.len - a.len; 
-        });
-
-        const secondaries = beams.slice(1);
-        const iBounds = inter.bounds;
-        const iPolyPoints = [
-            { x: iBounds.startX, y: iBounds.startY },
-            { x: iBounds.endX, y: iBounds.startY },
-            { x: iBounds.endX, y: iBounds.endY },
-            { x: iBounds.startX, y: iBounds.endY }
-        ];
-
-        secondaries.forEach(sec => {
-            const poly: DxfEntity = { type: EntityType.LWPOLYLINE, vertices: sec.info.vertices, closed: true, layer: 'TEMP' };
-            const obb = computeOBB(poly);
-            if (!obb) return;
-
-            const project = (p: Point) => (p.x - obb.center.x) * obb.u.x + (p.y - obb.center.y) * obb.u.y;
-            let minP = Infinity, maxP = -Infinity;
-
-            iPolyPoints.forEach(p => {
-                 const t = project(p);
-                 minP = Math.min(minP, t);
-                 maxP = Math.max(maxP, t);
-            });
-            
-            if (!beamCuts.has(sec.idx)) beamCuts.set(sec.idx, []);
-            beamCuts.get(sec.idx)!.push({ min: minP, max: maxP });
-        });
-    });
 
     // 2. Calculate Volumes
     interface BeamStat {
@@ -1570,66 +1534,16 @@ export const runBeamCalculation = (
     let totalVolume = 0;
 
     infos.forEach(info => {
-        const poly: DxfEntity = { type: EntityType.LWPOLYLINE, vertices: info.vertices, closed: true, layer: 'TEMP' };
-        const obb = computeOBB(poly);
-        if (!obb) return;
-
-        const cuts = beamCuts.get(info.beamIndex);
-        let segments = [{ start: obb.minT, end: obb.maxT }];
-
-        if (cuts && cuts.length > 0) {
-            cuts.sort((a, b) => a.min - b.min);
-            const mergedCuts: {min: number, max: number}[] = [];
-            let curr = cuts[0];
-            for(let i=1; i<cuts.length; i++) {
-                if (cuts[i].min < curr.max) {
-                    curr.max = Math.max(curr.max, cuts[i].max);
-                } else {
-                    mergedCuts.push(curr);
-                    curr = cuts[i];
-                }
-            }
-            mergedCuts.push(curr);
-
-            for (const cut of mergedCuts) {
-                const nextSegments: {start: number, end: number}[] = [];
-                for (const seg of segments) {
-                    if (cut.min > seg.start && cut.max < seg.end) {
-                        nextSegments.push({ start: seg.start, end: cut.min });
-                        nextSegments.push({ start: cut.max, end: seg.end });
-                    } else if (cut.min <= seg.start && cut.max > seg.start && cut.max < seg.end) {
-                         nextSegments.push({ start: cut.max, end: seg.end });
-                    } else if (cut.min > seg.start && cut.min < seg.end && cut.max >= seg.end) {
-                        nextSegments.push({ start: seg.start, end: cut.min });
-                    } else if (cut.min <= seg.start && cut.max >= seg.end) {
-                        // Drop
-                    } else {
-                        nextSegments.push(seg);
-                    }
-                }
-                segments = nextSegments;
-            }
-        }
-
-        let totalLen = 0;
-        segments.forEach(s => totalLen += (s.end - s.start));
-        
-        // Convert mm to m
-        const L_m = totalLen / 1000;
-        const W_m = (info.width || 0) / 1000;
-        const H_m = (info.height || 0) / 1000;
-        const vol = L_m * W_m * H_m;
-
-        if (vol > 0) {
+        if (info.volume > 0) {
             stats.push({
-                id: info.id,
+                id: info.beamIndex.toString(), // Using numeric index as ID for report
                 code: info.code,
-                width: info.width || 0,
-                height: info.height || 0,
-                length: Math.round(totalLen),
-                volume: parseFloat(vol.toFixed(3))
+                width: info.width,
+                height: info.height,
+                length: info.length,
+                volume: info.volume
             });
-            totalVolume += vol;
+            totalVolume += info.volume;
         }
     });
 
@@ -1653,6 +1567,7 @@ export const runBeamCalculation = (
     doc.line(14, y + 2, 190, y + 2);
     y += 8;
 
+    // Grouping optional? No, list all fragments as they might be distinct physical pieces now
     stats.forEach((item, index) => {
         if (y > 270) {
             doc.addPage();
