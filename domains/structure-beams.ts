@@ -1,12 +1,7 @@
 
-
-
-
-
-
 import React from 'react';
 import { jsPDF } from 'jspdf';
-import { DxfEntity, EntityType, Point, Bounds, ProjectFile } from '../types';
+import { DxfEntity, EntityType, Point, Bounds, ProjectFile, SemanticLayer } from '../types';
 import { extractEntities } from '../utils/dxfHelpers';
 import { updateProject, getMergeBaseBounds, findEntitiesInAllProjects, isEntityInBounds, filterEntitiesInBounds, isPointInBounds, expandBounds, boundsOverlap } from './structure-common';
 import {
@@ -29,7 +24,6 @@ interface BeamSegment extends DxfEntity {
     beamAngle?: number;
 }
 
-const BEAM_LAYER_CANDIDATES = ['BEAM', 'BEAM_CON'];
 const DEFAULT_BEAM_STAGE_COLORS: Record<string, string> = {
     BEAM_STEP1_RAW: '#10b981',      // Green
     BEAM_STEP2_GEO: '#06b6d4',      // Cyan
@@ -61,7 +55,11 @@ const collectBeamSources = (
     // 1. Find Annotation Layers (only merged label layers)
     const beamTextLayers = activeProject.data.layers.filter(l => l === 'MERGE_LABEL_H' || l === 'MERGE_LABEL_V');
 
-    const beamLayers = BEAM_LAYER_CANDIDATES;
+    const beamLayers = activeProject.layerConfig[SemanticLayer.BEAM];
+    if (beamLayers.length === 0) {
+        alert("No Beam layers configured.");
+        return null;
+    }
 
     let rawEntities = extractEntities(beamLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
     let rawTextEntities = extractEntities(beamTextLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
@@ -71,17 +69,18 @@ const collectBeamSources = (
     const textEntities = filterEntitiesInBounds(rawTextEntities, baseBounds);
 
     // Axis Lines
-    const axisLayers = activeProject.data.layers.filter(l => l.toUpperCase().includes('AXIS'));
+    const axisLayers = activeProject.layerConfig[SemanticLayer.AXIS];
     const rawAxis = extractEntities(axisLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
     const axisLines = filterEntitiesInBounds(rawAxis, baseBounds);
 
     // 2. Obstacles (Walls and Columns)
+    // Always include calculated results if present
     let walls: DxfEntity[] = [];
     const wallCalcLayer = activeProject.data.layers.find(l => l === 'WALL_CALC');
     if (wallCalcLayer) {
         walls = extractEntities([wallCalcLayer], activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
     } else {
-        const rawWallLayers = activeProject.data.layers.filter(l => /wall|墙/i.test(l) && !l.endsWith('_CALC'));
+        const rawWallLayers = activeProject.layerConfig[SemanticLayer.WALL];
         walls = extractEntities(rawWallLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
     }
     walls = filterEntitiesInBounds(walls, baseBounds);
@@ -91,35 +90,51 @@ const collectBeamSources = (
     if (colCalcLayer) {
         cols = extractEntities([colCalcLayer], activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
     } else {
-        const rawColLayers = activeProject.data.layers.filter(l => /colu|column|柱/i.test(l) && !l.endsWith('_CALC'));
+        const rawColLayers = activeProject.layerConfig[SemanticLayer.COLUMN];
         cols = extractEntities(rawColLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
     }
     cols = filterEntitiesInBounds(cols, baseBounds);
 
-    if (cols.length < 5) {
-        // Fallback: Check global projects if local columns are missing
-        const globalCols = findEntitiesInAllProjects(projects, /colu|column|柱/i);
-        cols = filterEntitiesInBounds(globalCols, baseBounds);
-    }
+    // If local obstacles are sparse, maybe check global (for columns only, typically)
+    // NOTE: This fallback logic is debatable if we stick strictly to config. 
+    // If we want strict config, remove global fallback. 
+    // Let's keep it but use config-based search in other projects? 
+    // For now, let's trust current project + calc layers.
 
     const obstacles = [...walls, ...cols];
 
     // 3. Valid Widths (From Text)
+    // Only scan Beam Label Layers for valid widths if provided
+    const labelLayers = activeProject.layerConfig[SemanticLayer.BEAM_LABEL];
+    
+    // We also use the textEntities derived from MERGE_LABEL which are high confidence labels
     const validWidths = new Set<number>();
-    textEntities.forEach(t => {
-        if (!t.text) return;
-        const matches = t.text.match(/^.+\s+(\d+)[xX脳]\d+/);
-        if (matches) {
-            const w = parseInt(matches[1], 10);
-            if (!isNaN(w) && w >= 100 && w <= 2000) validWidths.add(w);
-        } else {
-            const simpleMatch = t.text.match(/^(\d+)[xX脳]\d+$/);
-            if (simpleMatch) {
-                const w = parseInt(simpleMatch[1], 10);
+    
+    const scanForWidths = (ents: DxfEntity[]) => {
+        ents.forEach(t => {
+            if (!t.text) return;
+            const matches = t.text.match(/^.+\s+(\d+)[xX脳]\d+/);
+            if (matches) {
+                const w = parseInt(matches[1], 10);
                 if (!isNaN(w) && w >= 100 && w <= 2000) validWidths.add(w);
+            } else {
+                const simpleMatch = t.text.match(/^(\d+)[xX脳]\d+$/);
+                if (simpleMatch) {
+                    const w = parseInt(simpleMatch[1], 10);
+                    if (!isNaN(w) && w >= 100 && w <= 2000) validWidths.add(w);
+                }
             }
-        }
-    });
+        });
+    };
+
+    scanForWidths(textEntities);
+    
+    if (labelLayers.length > 0) {
+         const rawLabels = extractEntities(labelLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
+            .filter(e => e.type === EntityType.TEXT);
+         const boundedLabels = filterEntitiesInBounds(rawLabels, baseBounds);
+         scanForWidths(boundedLabels);
+    }
 
     return {
         baseBounds,
@@ -1587,13 +1602,11 @@ export const runBeamCalculation = (
                 id: info.beamIndex.toString(),
                 parentId: info.parentBeamIndex.toString(),
                 code: info.code,
-                width: iLen, 
+                width: iW, 
                 height: iH,
                 length: iLen,
                 volume: iVol
             });
-            // Fix field mapping above: width: iW
-            grouped[viewName][grouped[viewName].length - 1].width = iW; 
 
             viewVolumes[viewName] += iVol;
             totalProjectVolume += iVol;

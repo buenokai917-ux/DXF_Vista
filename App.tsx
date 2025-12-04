@@ -2,7 +2,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { jsPDF } from 'jspdf';
 import { parseDxf } from './utils/dxfParser';
-import { DxfData, LayerColors, DxfEntity, EntityType, Point, Bounds, SearchResult, ViewportRegion, AnalysisDomain, ProjectFile } from './types';
+import { DxfData, LayerColors, DxfEntity, EntityType, Point, Bounds, SearchResult, ViewportRegion, AnalysisDomain, ProjectFile, SemanticLayer } from './types';
 import { calculateTotalBounds, getEntityBounds } from './utils/geometryUtils';
 import { extractEntities } from './utils/dxfHelpers';
 import { Viewer } from './components/Viewer';
@@ -43,6 +43,9 @@ const App: React.FC = () => {
   // Analysis State
   const [analysisDomain, setAnalysisDomain] = useState<AnalysisDomain>('STRUCTURE');
 
+  // Picking State for Layer Configuration
+  const [pickingTarget, setPickingTarget] = useState<SemanticLayer | null>(null);
+
   // Search State
   const [searchText, setSearchText] = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
@@ -55,6 +58,37 @@ const App: React.FC = () => {
   , [projects, activeProjectId]);
 
   // --- DATA LOADING ---
+
+  const autoDetectLayers = (layers: string[]): Record<SemanticLayer, string[]> => {
+    const config: Record<SemanticLayer, string[]> = {
+      [SemanticLayer.AXIS]: [],
+      [SemanticLayer.COLUMN]: [],
+      [SemanticLayer.WALL]: [],
+      [SemanticLayer.BEAM]: [],
+      [SemanticLayer.BEAM_LABEL]: [],
+      [SemanticLayer.VIEWPORT_TITLE]: []
+    };
+
+    layers.forEach(l => {
+      const lower = l.toLowerCase();
+      if (/axis|轴|grid/i.test(l)) config[SemanticLayer.AXIS].push(l);
+      else if (/colu|column|柱/i.test(l)) config[SemanticLayer.COLUMN].push(l);
+      else if (/wall|墙/i.test(l)) config[SemanticLayer.WALL].push(l);
+      else if (/beam|梁/i.test(l) && !/text|dim|anno|标注|文字/i.test(l)) config[SemanticLayer.BEAM].push(l);
+      
+      // Heuristics for text/labels
+      if (/dim|anno|text|标注|文字|label/i.test(l)) {
+          config[SemanticLayer.BEAM_LABEL].push(l);
+          // Also possibly viewport title, but usually titles are on specific layers. 
+          // We can't easily distinguish without more context, but let's add to LABEL for now.
+      }
+      if (/title|name|图名|view/i.test(l)) {
+          config[SemanticLayer.VIEWPORT_TITLE].push(l);
+      }
+    });
+
+    return config;
+  };
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const uploadedFiles = event.target.files;
@@ -162,6 +196,7 @@ const App: React.FC = () => {
              data: parsed,
              activeLayers: new Set(parsed.layers),
              filledLayers: new Set(),
+             layerConfig: autoDetectLayers(parsed.layers),
              splitRegions: null
            });
         }));
@@ -216,6 +251,32 @@ const App: React.FC = () => {
       ...prev,
       [layer]: newColor
     }));
+  };
+
+  // --- PICKING LOGIC ---
+  const handleLayerPick = (layer: string) => {
+    if (!pickingTarget || !activeProject) return;
+    
+    setProjects(prev => prev.map(p => {
+        if (p.id === activeProject.id) {
+            const currentConfig = p.layerConfig[pickingTarget] || [];
+            // Toggle layer in config
+            const newConfig = currentConfig.includes(layer) 
+                ? currentConfig.filter(l => l !== layer)
+                : [...currentConfig, layer];
+            
+            return {
+                ...p,
+                layerConfig: {
+                    ...p.layerConfig,
+                    [pickingTarget]: newConfig
+                }
+            };
+        }
+        return p;
+    }));
+    // Note: We do NOT clear pickingTarget here to allow multi-select. 
+    // User must manually stop picking via Sidebar UI.
   };
 
   // --- SEARCH ---
@@ -610,6 +671,8 @@ const App: React.FC = () => {
                     setAnalysisDomain={setAnalysisDomain}
                     setProjects={setProjects}
                     setLayerColors={setLayerColors}
+                    pickingTarget={pickingTarget}
+                    setPickingTarget={setPickingTarget}
                 />
              </div>
         )}
@@ -738,6 +801,8 @@ const App: React.FC = () => {
                activeHighlightIndex={currentResultIdx}
                onRef={(ref) => canvasRef.current = ref} 
                projectName={activeProject?.name}
+               pickingTarget={pickingTarget}
+               onLayerPicked={handleLayerPick}
              />
         </div>
       </div>

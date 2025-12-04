@@ -1,5 +1,6 @@
+
 import React from 'react';
-import { DxfEntity, EntityType, ProjectFile, ViewportRegion, Point, Bounds } from '../types';
+import { DxfEntity, EntityType, ProjectFile, ViewportRegion, Point, Bounds, SemanticLayer } from '../types';
 import { extractEntities } from '../utils/dxfHelpers';
 import { boundsOverlap, expandBounds, isPointInBounds } from './structure-common';
 import {
@@ -20,17 +21,30 @@ export const runCalculateSplitRegions = (
   const resultLayer = 'VIEWPORT_CALC';
   const debugLayer = 'VIEWPORT_DEBUG';
 
-  const axisLayers = activeProject.data.layers.filter(l => l.toUpperCase().includes('AXIS'));
+  const axisLayers = activeProject.layerConfig[SemanticLayer.AXIS];
+  if (axisLayers.length === 0) {
+    if (!suppressAlert) alert('No AXIS layers configured. Please check Layer Configuration.');
+    return null;
+  }
+
   const axisLines = extractEntities(axisLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
     .filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
 
   if (axisLines.length === 0) {
-    if (!suppressAlert) console.log('No AXIS lines found to determine regions.');
+    if (!suppressAlert) console.log('No AXIS lines found in configured layers.');
     return null;
   }
 
-  const allText = extractEntities(activeProject.data.layers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
-    .filter(e => e.type === EntityType.TEXT);
+  // Use all text or specific title layers if available
+  const titleLayers = activeProject.layerConfig[SemanticLayer.VIEWPORT_TITLE];
+  const useSpecificTitleLayers = titleLayers.length > 0;
+  
+  const allText = extractEntities(
+      useSpecificTitleLayers ? titleLayers : activeProject.data.layers, 
+      activeProject.data.entities, 
+      activeProject.data.blocks, 
+      activeProject.data.blockBasePoints
+  ).filter(e => e.type === EntityType.TEXT);
 
   const allLines = extractEntities(activeProject.data.layers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
     .filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
@@ -42,7 +56,8 @@ export const runCalculateSplitRegions = (
   const regions: ViewportRegion[] = [];
 
   clusters.forEach((box, i) => {
-    const { title, scannedBounds } = findTitleForBounds(box, allText, allLines);
+    // If specific title layers are set, restrict search to those
+    const { title, scannedBounds } = findTitleForBounds(box, allText, allLines, useSpecificTitleLayers ? '' : undefined);
     const label = title || `BLOCK ${i + 1}`;
 
     regions.push({
@@ -134,7 +149,7 @@ export const runMergeViews = (
     return;
   }
 
-  const axisLayers = activeProject.data.layers.filter(l => l.toUpperCase().includes('AXIS'));
+  const axisLayers = activeProject.layerConfig[SemanticLayer.AXIS];
   const axisLines = extractEntities(axisLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
     .filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
 
@@ -186,6 +201,11 @@ export const runMergeViews = (
   };
 
   const layerLooksLabel = (layer: string) => {
+    // If BEAM_LABEL is configured, strict check
+    const labelLayers = activeProject.layerConfig[SemanticLayer.BEAM_LABEL];
+    if (labelLayers.length > 0) return labelLayers.includes(layer);
+
+    // Fallback Regex
     const u = layer.toUpperCase();
     if (u.includes('AXIS') || u.includes('中心线')) return false;
     return u.includes('标注') || u.includes('DIM') || u.includes('LABEL') || /^Z[\u4e00-\u9fa5]/.test(layer);
@@ -289,8 +309,10 @@ export const runMergeViews = (
     if (!labelLayerTargets[ent.layer]) return false;
     const u = ent.layer.toUpperCase();
     if (u.includes('AXIS') || u.includes('中心线')) return false;
-    const looksLabel = u.includes('标注') || u.includes('DIM') || u.includes('LABEL') || /^Z[\u4e00-\u9fa5]/.test(ent.layer);
+    // Check specific config or heuristics
+    if (activeProject.layerConfig[SemanticLayer.BEAM_LABEL].includes(ent.layer)) return true;
 
+    const looksLabel = u.includes('标注') || u.includes('DIM') || u.includes('LABEL') || /^Z[\u4e00-\u9fa5]/.test(ent.layer);
     if (ent.type === EntityType.DIMENSION) return true;
     if (ent.type === EntityType.TEXT || ent.type === EntityType.ATTRIB) return looksLabel;
     return looksLabel;
@@ -417,8 +439,8 @@ export const runMergeViews = (
         const bestAngle = (Math.atan2(leaderEnd.y - leaderStart.y, leaderEnd.x - leaderStart.x) * 180) / Math.PI;
 
         const firstLine = (txt.text || '').split(/\r?\n/)[0]?.trim() || '';
-        const richMatch = firstLine.match(/^([A-Z0-9\-]+)\(([^)]+)\)\s+(\d+)[xX*��](\d+)/i);
-        const simpleDimMatch = firstLine.match(/^([A-Z0-9\-]+)\s+(\d+)[xX*��](\d+)/i);
+        const richMatch = firstLine.match(/^([A-Z0-9\-]+)\(([^)]+)\)\s+(\d+)[xX*](\d+)/i);
+        const simpleDimMatch = firstLine.match(/^([A-Z0-9\-]+)\s+(\d+)[xX*](\d+)/i);
         const codeSpanMatch = firstLine.match(/^([A-Z0-9\-]+)\(([^)]+)\)/i);
         const codeOnlyMatch = firstLine.match(/^([A-Z0-9\-]+)$/i);
 

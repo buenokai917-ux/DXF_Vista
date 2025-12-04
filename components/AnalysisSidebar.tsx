@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { ProjectFile, AnalysisDomain } from '../types';
+import { ProjectFile, AnalysisDomain, SemanticLayer } from '../types';
 import { StructurePanel } from './analysis/StructurePanel';
 import { LandscapePanel } from './analysis/LandscapePanel';
 import { ElectricalPanel } from './analysis/ElectricalPanel';
@@ -14,6 +14,8 @@ interface AnalysisSidebarProps {
     setAnalysisDomain: (domain: AnalysisDomain) => void;
     setProjects: React.Dispatch<React.SetStateAction<ProjectFile[]>>;
     setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>;
+    pickingTarget: SemanticLayer | null;
+    setPickingTarget: (target: SemanticLayer | null) => void;
 }
 
 export const AnalysisSidebar: React.FC<AnalysisSidebarProps> = ({
@@ -23,7 +25,9 @@ export const AnalysisSidebar: React.FC<AnalysisSidebarProps> = ({
     analysisDomain,
     setAnalysisDomain,
     setProjects,
-    setLayerColors
+    setLayerColors,
+    pickingTarget,
+    setPickingTarget
 }) => {
     
     return (
@@ -64,6 +68,8 @@ export const AnalysisSidebar: React.FC<AnalysisSidebarProps> = ({
                     isLoading={isLoading}
                     setProjects={setProjects}
                     setLayerColors={setLayerColors}
+                    pickingTarget={pickingTarget}
+                    setPickingTarget={setPickingTarget}
                 />
             )}
             

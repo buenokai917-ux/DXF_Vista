@@ -1,11 +1,12 @@
 
 import React from 'react';
-import { ProjectFile } from '../../types';
+import { ProjectFile, SemanticLayer } from '../../types';
 import { runCalculateSplitRegions, runMergeViews } from '../../domains/structure-views';
 import { runCalculateColumns, runCalculateWalls } from '../../domains/structure-verticals';
 import { runBeamRawGeneration, runBeamIntersectionProcessing, runBeamAttributeMounting, runBeamTopologyMerge, runBeamCalculation } from '../../domains/structure-beams';
 import { Button } from '../Button';
-import { Grid, Merge, Box, ArrowRightLeft, AlignJustify, Tag, GitMerge, Radio, Spline, Calculator } from 'lucide-react';
+import { Grid, Merge, Box, ArrowRightLeft, AlignJustify, Tag, GitMerge, Spline, Calculator } from 'lucide-react';
+import { LayerConfigPanel } from './LayerConfigPanel';
 
 interface StructurePanelProps {
     activeProject: ProjectFile | null;
@@ -13,6 +14,8 @@ interface StructurePanelProps {
     isLoading: boolean;
     setProjects: React.Dispatch<React.SetStateAction<ProjectFile[]>>;
     setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>;
+    pickingTarget: SemanticLayer | null;
+    setPickingTarget: (target: SemanticLayer | null) => void;
 }
 
 export const StructurePanel: React.FC<StructurePanelProps> = ({
@@ -20,10 +23,22 @@ export const StructurePanel: React.FC<StructurePanelProps> = ({
     projects,
     isLoading,
     setProjects,
-    setLayerColors
+    setLayerColors,
+    pickingTarget,
+    setPickingTarget
 }) => {
     return (
         <div className="space-y-4 animate-in fade-in slide-in-from-left-2 duration-300">
+            {/* Step 0: Layer Config */}
+            {activeProject && (
+                <LayerConfigPanel 
+                    activeProject={activeProject}
+                    pickingTarget={pickingTarget}
+                    setPickingTarget={setPickingTarget}
+                    setProjects={setProjects}
+                />
+            )}
+
             {/* Step 1: View Setup */}
             <div className="space-y-2">
                 <h3 className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider flex items-center">

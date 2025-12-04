@@ -11,6 +11,15 @@ export enum EntityType {
   UNKNOWN = 'UNKNOWN'
 }
 
+export enum SemanticLayer {
+  AXIS = 'AXIS',
+  COLUMN = 'COLUMN',
+  WALL = 'WALL',
+  BEAM = 'BEAM',
+  BEAM_LABEL = 'BEAM_LABEL',
+  VIEWPORT_TITLE = 'VIEWPORT_TITLE'
+}
+
 export interface Point {
   x: number;
   y: number;
@@ -36,24 +45,22 @@ export interface DxfEntity {
 
   // For Insert/Block
   blockName?: string;
-  scale?: Point; // X=41, Y=42, Z=43
-  rotation?: number; // Code 50
-  hasAttributes?: boolean; // Code 66
+  scale?: Point;
+  rotation?: number;
+  
+  // For MINSERT
+  columnCount?: number;
+  rowCount?: number;
+  columnSpacing?: number;
+  rowSpacing?: number;
 
-  // For MINSERT (Multiple Insert)
-  columnCount?: number; // Code 70
-  rowCount?: number;    // Code 71
-  columnSpacing?: number; // Code 44
-  rowSpacing?: number;    // Code 45
+  // For attributes
+  invisible?: boolean;
+  hasAttributes?: boolean;
 
-  // For Attrib
-  invisible?: boolean; // Code 70 bit 1
-
-  // For MTEXT direction
-  xAxis?: Point; // Code 11, 21
-
-  // For distinguishing MTEXT vs TEXT during parsing
-  _originalType?: string; 
+  // Metadata
+  _originalType?: string;
+  xAxis?: Point; // For MTEXT direction
 }
 
 export interface DxfData {
@@ -63,6 +70,8 @@ export interface DxfData {
   blockBasePoints: Record<string, Point>;
 }
 
+export type LayerColors = Record<string, string>;
+
 export interface Bounds {
   minX: number;
   minY: number;
@@ -71,92 +80,83 @@ export interface Bounds {
 }
 
 export interface SearchResult {
-  bounds: Bounds;
-  rotation: number;
+    bounds: Bounds;
+    rotation?: number;
 }
 
 export interface ViewportRegion {
-  bounds: Bounds;
-  title: string;
-  info: { prefix: string, index: number } | null;
+    bounds: Bounds;
+    title: string;
+    info: { prefix: string, index: number } | null;
 }
 
-export type LabelOrientation = number | null; // angle in degrees, null if unknown
+export interface BeamStep2GeoInfo {
+    id: string;
+    layer: string;
+    shape: 'rect' | 'poly';
+    vertices: Point[];
+    bounds: { startX: number, startY: number, endX: number, endY: number };
+    center?: Point;
+    radius?: number;
+    angle?: number;
+    beamIndex: number;
+}
+
+export type IntersectionShape = 'L' | 'T' | 'C'; // C = Cross
+
+export interface BeamIntersectionInfo {
+    id: string;
+    layer: string;
+    shape: 'rect';
+    vertices: Point[];
+    bounds: { startX: number, startY: number, endX: number, endY: number };
+    center: Point;
+    radius?: number;
+    parts?: DxfEntity[];
+    junction: IntersectionShape;
+    angle?: number;
+    beamIndexes: number[];
+}
+
+export interface BeamStep3AttrInfo {
+    id: string;
+    layer: string;
+    shape: 'rect';
+    vertices: Point[];
+    bounds: { startX: number, startY: number, endX: number, endY: number };
+    center?: Point;
+    radius?: number;
+    angle?: number;
+    beamIndex: number;
+    // Attributes
+    code: string;
+    span?: string | null;
+    width: number;
+    height: number;
+    rawLabel: string;
+}
+
+export interface BeamStep4TopologyInfo extends BeamStep3AttrInfo {
+    length: number;
+    volume: number;
+    parentBeamIndex: number;
+}
 
 export interface BeamLabelInfo {
-  id: string;
-  sourceLayer: string;
-  orientation: LabelOrientation;
-  textRaw: string;
-  textInsert: Point | null;
-  leaderStart: Point | null;
-  leaderEnd: Point | null;
-  parsed?: { code: string; span: string | null; width?: number; height?: number };
-  hit?: {
-    startHits?: number[];
-    endHits?: number[];
-    status?: 'start' | 'end' | 'both' | 'conflict' | 'none';
-    chosen?: number;
-  };
-  notes?: string;
+    id: string;
+    sourceLayer: string;
+    orientation: number; // angle in degrees
+    textRaw: string;
+    textInsert: Point | null;
+    leaderStart: Point | null;
+    leaderEnd: Point | null;
+    parsed?: {
+        code: string;
+        span: string | null;
+        width?: number;
+        height?: number;
+    };
 }
-
-export type BeamShapeType = 'rect' | 'poly' | 'circle' | 'compound';
-
-export interface BeamShapePart {
-  shape: BeamShapeType;
-  vertices?: Point[];
-  center?: Point;
-  radius?: number;
-}
-
-export interface BeamRectInfo {
-  id: string;
-  layer: string;
-  shape: BeamShapeType;
-  vertices: Point[];
-  bounds: { startX: number; startY: number; endX: number; endY: number };
-  center?: Point; // for circles/compounds
-  radius?: number; // for circles
-  parts?: BeamShapePart[]; // for compound shapes
-  angle?: number; // orientation in degrees, optional
-}
-
-export interface BeamStep2GeoInfo extends BeamRectInfo {
-  beamIndex: number;
-}
-
-export interface BeamStep3AttrInfo extends BeamRectInfo {
-  beamIndex: number;
-  code: string;
-  span?: string | null;
-  width?: number;
-  height?: number;
-  rawLabel: string;
-}
-
-export interface BeamStep4TopologyInfo extends BeamRectInfo {
-  beamIndex: number;
-  parentBeamIndex: number;
-  code: string;
-  span?: string | null;
-  width: number;
-  height: number;
-  rawLabel: string;
-  length: number;
-  volume: number;
-}
-
-export type IntersectionShape = 'C' | 'T' | 'L';
-
-export interface BeamIntersectionInfo extends BeamRectInfo {
-  junction: IntersectionShape; // L/T/C topology
-  beamIndexes: number[]; // references beamStep2GeoInfo.beamIndex
-}
-
-export type LayerColors = { [key: string]: string };
-
-export type AnalysisDomain = 'STRUCTURE' | 'LANDSCAPE' | 'ELECTRICAL';
 
 export interface ProjectFile {
   id: string;
@@ -164,6 +164,7 @@ export interface ProjectFile {
   data: DxfData;
   activeLayers: Set<string>;
   filledLayers: Set<string>;
+  layerConfig: Record<SemanticLayer, string[]>;
   splitRegions: ViewportRegion[] | null;
   beamLabels?: BeamLabelInfo[];
   beamStep2GeoInfos?: BeamStep2GeoInfo[];
@@ -171,3 +172,5 @@ export interface ProjectFile {
   beamStep3AttrInfos?: BeamStep3AttrInfo[];
   beamStep4TopologyInfos?: BeamStep4TopologyInfo[];
 }
+
+export type AnalysisDomain = 'STRUCTURE' | 'LANDSCAPE' | 'ELECTRICAL';

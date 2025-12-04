@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { DxfData, LayerColors, Bounds, SearchResult } from '../types';
-import { ZoomIn, ZoomOut, Maximize, MousePointer2 } from 'lucide-react';
+import { DxfData, LayerColors, Bounds, SearchResult, SemanticLayer } from '../types';
+import { ZoomIn, ZoomOut, Maximize, MousePointer2, Crosshair } from 'lucide-react';
 import { calculateTotalBounds, findLayersAtPoint } from '../utils/geometryUtils';
 import { renderDxfToCanvas } from '../utils/renderUtils';
 
@@ -14,6 +14,8 @@ interface ViewerProps {
   activeHighlightIndex?: number;
   onRef?: (ref: HTMLCanvasElement | null) => void;
   projectName?: string;
+  pickingTarget?: SemanticLayer | null;
+  onLayerPicked?: (layer: string) => void;
 }
 
 export const Viewer: React.FC<ViewerProps> = ({ 
@@ -25,7 +27,9 @@ export const Viewer: React.FC<ViewerProps> = ({
   highlights, 
   activeHighlightIndex, 
   onRef,
-  projectName
+  projectName,
+  pickingTarget,
+  onLayerPicked
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -129,6 +133,19 @@ export const Viewer: React.FC<ViewerProps> = ({
   };
 
   const handleMouseDown = (e: React.MouseEvent) => {
+    // If Picking Mode is Active, Click selects the layer
+    if (pickingTarget && data) {
+        // Force a hit test immediately
+        const worldX = (e.clientX - containerRef.current!.getBoundingClientRect().left - transform.x) / transform.k;
+        const worldY = (containerRef.current!.getBoundingClientRect().height - (e.clientY - containerRef.current!.getBoundingClientRect().top) - transform.y) / transform.k;
+        const tolerance = 15 / transform.k; // slightly larger tolerance for picking
+        const layers = findLayersAtPoint({x: worldX, y: worldY}, data.entities, data.blocks, data.blockBasePoints, activeLayers, tolerance);
+        if (layers.length > 0 && onLayerPicked) {
+            onLayerPicked(layers[0]);
+        }
+        return; // Don't drag if picking
+    }
+
     setIsDragging(true);
     setLastMouse({ x: e.clientX, y: e.clientY });
   };
@@ -140,13 +157,6 @@ export const Viewer: React.FC<ViewerProps> = ({
     const mouseX = e.clientX - rect.left;
     const mouseY = e.clientY - rect.top;
     
-    // Transform logic: canvasY = height - (worldY * k + ty) -> worldY = (height - canvasY - ty) / k
-    // However, our render logic is: ctx.translate(tx, height - ty); ctx.scale(k, -k);
-    // Which means: screenX = worldX * k + tx
-    //              screenY = height - (worldY * k + ty)
-    // So: worldX = (screenX - tx) / k
-    //     worldY = (height - screenY - ty) / k
-    
     const worldX = (mouseX - transform.x) / transform.k;
     const worldY = (rect.height - mouseY - transform.y) / transform.k;
     
@@ -157,10 +167,7 @@ export const Viewer: React.FC<ViewerProps> = ({
         const dx = e.clientX - lastMouse.x;
         const dy = e.clientY - lastMouse.y;
         setLastMouse({ x: e.clientX, y: e.clientY });
-        setTransform(prev => ({ ...prev, x: prev.x + dx, y: prev.y - dy })); // Inverting Y delta for pan usually feels wrong if coords are flipped? 
-        // Actually for standard pan: visual move up = content move up. 
-        // If Y is up, screen Y down is world Y down.
-        // Let's stick to existing logic: setTransform(prev => ({ ...prev, x: prev.x + dx, y: prev.y - dy }));
+        setTransform(prev => ({ ...prev, x: prev.x + dx, y: prev.y - dy })); 
     }
 
     // 3. Throttled Hit Test
@@ -244,7 +251,7 @@ export const Viewer: React.FC<ViewerProps> = ({
   return (
     <div 
       ref={containerRef} 
-      className="w-full h-full relative bg-slate-900 overflow-hidden cursor-crosshair touch-none select-none"
+      className={`w-full h-full relative bg-slate-900 overflow-hidden touch-none select-none ${pickingTarget ? 'cursor-crosshair' : 'cursor-grab active:cursor-grabbing'}`}
       onWheel={handleWheel}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
@@ -253,6 +260,14 @@ export const Viewer: React.FC<ViewerProps> = ({
     >
       <canvas ref={canvasRef} className="block w-full h-full" />
       
+      {/* Picking Overlay Indicator */}
+      {pickingTarget && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-blue-600/90 text-white px-4 py-2 rounded-full shadow-lg border border-blue-400 backdrop-blur-md z-50 flex items-center gap-2 animate-pulse">
+            <Crosshair size={16} />
+            <span className="text-xs font-semibold uppercase tracking-wider">Picking {pickingTarget.replace('_', ' ')}...</span>
+        </div>
+      )}
+
       {/* Top Right Overlay Container: Inspection & File Info */}
       <div className="absolute top-4 right-4 pointer-events-none flex items-start gap-3">
           

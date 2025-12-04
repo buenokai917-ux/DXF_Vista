@@ -1,5 +1,6 @@
+
 import React from 'react';
-import { EntityType, ProjectFile, DxfEntity, Bounds, Point } from '../types';
+import { EntityType, ProjectFile, DxfEntity, Bounds, Point, SemanticLayer } from '../types';
 import { findParallelPolygons, getEntityBounds, distancePointToLine } from '../utils/geometryUtils';
 import { extractEntities } from '../utils/dxfHelpers';
 import { updateProject, getMergeBaseBounds, findEntitiesInAllProjects, filterEntitiesInBounds, isEntityInBounds } from './structure-common';
@@ -11,9 +12,14 @@ export const runCalculateColumns = (
     setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>
 ) => {
     const baseBounds = getMergeBaseBounds(activeProject, 2500);
-    const targetLayers = activeProject.data.layers.filter(l => /colu|column|柱/i.test(l));
+    const targetLayers = activeProject.layerConfig[SemanticLayer.COLUMN];
     const resultLayer = 'COLU_CALC';
     const contextLayers = ['AXIS', 'WALL_CALC', 'BEAM_CALC'];
+
+    if (targetLayers.length === 0) {
+        alert("No Column layers configured.");
+        return;
+    }
 
     let rawEntities = extractEntities(targetLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
 
@@ -46,17 +52,25 @@ export const runCalculateWalls = (
     const baseBounds = getMergeBaseBounds(activeProject, 2500);
 
     // 1. Prepare Layers
-    const targetLayers = activeProject.data.layers.filter(l => /wall|墙/i.test(l));
+    const targetLayers = activeProject.layerConfig[SemanticLayer.WALL];
+    if (targetLayers.length === 0) {
+        alert("No Wall layers configured.");
+        return;
+    }
 
     // 2. Prepare Obstacles (COLUMNS ONLY - Walls stop at columns, but continue through Beams)
-    let columnObstacles = findEntitiesInAllProjects(projects, /colu|column|柱/i);
+    // NOTE: Obstacles usually need to come from configured column layers across all projects, but let's stick to current project config + global calc
+    const columnLayers = activeProject.layerConfig[SemanticLayer.COLUMN];
+    let columnObstacles = extractEntities(columnLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
+
     // Include calculated columns if they exist
     const calcColumns = extractEntities(['COLU_CALC'], activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
     columnObstacles = [...columnObstacles, ...calcColumns];
     columnObstacles = filterEntitiesInBounds(columnObstacles, baseBounds);
 
     // 3. Prepare Axis
-    const rawAxisEntities = extractEntities(['AXIS'], activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
+    const axisLayers = activeProject.layerConfig[SemanticLayer.AXIS];
+    const rawAxisEntities = extractEntities(axisLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
     let axisLines: DxfEntity[] = [];
 
     rawAxisEntities.forEach(ent => {
@@ -74,15 +88,6 @@ export const runCalculateWalls = (
     });
 
     axisLines = filterEntitiesInBounds(axisLines, baseBounds);
-
-    if (axisLines.length === 0) {
-        const otherAxis = findEntitiesInAllProjects(projects, /^AXIS$/i);
-        otherAxis.forEach(ent => {
-            if (ent.type === EntityType.LINE) {
-                if (!baseBounds || isEntityInBounds(ent, baseBounds)) axisLines.push(ent);
-            }
-        });
-    }
 
     const resultLayer = 'WALL_CALC';
     const contextLayers = ['AXIS', 'COLU', 'BEAM_CALC'];
