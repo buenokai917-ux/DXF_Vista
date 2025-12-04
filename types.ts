@@ -17,6 +17,7 @@ export enum SemanticLayer {
   WALL = 'WALL',
   BEAM = 'BEAM',
   BEAM_LABEL = 'BEAM_LABEL',
+  BEAM_IN_SITU_LABEL = 'BEAM_IN_SITU_LABEL',
   VIEWPORT_TITLE = 'VIEWPORT_TITLE'
 }
 

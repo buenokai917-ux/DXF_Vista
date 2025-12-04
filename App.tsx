@@ -59,30 +59,43 @@ const App: React.FC = () => {
 
   // --- DATA LOADING ---
 
-  const autoDetectLayers = (layers: string[]): Record<SemanticLayer, string[]> => {
+  const autoDetectLayers = (layers: string[], usedLayers: Set<string>): Record<SemanticLayer, string[]> => {
     const config: Record<SemanticLayer, string[]> = {
       [SemanticLayer.AXIS]: [],
       [SemanticLayer.COLUMN]: [],
       [SemanticLayer.WALL]: [],
       [SemanticLayer.BEAM]: [],
       [SemanticLayer.BEAM_LABEL]: [],
+      [SemanticLayer.BEAM_IN_SITU_LABEL]: [],
       [SemanticLayer.VIEWPORT_TITLE]: []
     };
 
     layers.forEach(l => {
+      // Filter out empty layers
+      if (!usedLayers.has(l)) return;
+
       const lower = l.toLowerCase();
+      
+      // Filter out dsp3d/dsptext layers (usually 3D generated artifacts)
+      if (lower.startsWith('dsp3d') || lower.includes('dsptext')) return;
+
       if (/axis|轴|grid/i.test(l)) config[SemanticLayer.AXIS].push(l);
       else if (/colu|column|柱/i.test(l)) config[SemanticLayer.COLUMN].push(l);
       else if (/wall|墙/i.test(l)) config[SemanticLayer.WALL].push(l);
       else if (/beam|梁/i.test(l) && !/text|dim|anno|标注|文字/i.test(l)) config[SemanticLayer.BEAM].push(l);
       
-      // Heuristics for text/labels
-      if (/dim|anno|text|标注|文字|label/i.test(l)) {
-          config[SemanticLayer.BEAM_LABEL].push(l);
-          // Also possibly viewport title, but usually titles are on specific layers. 
-          // We can't easily distinguish without more context, but let's add to LABEL for now.
+      // In-Situ Labels (Specific Reinforcement info)
+      if (/原位标注|in[-_]?situ/i.test(l)) {
+          config[SemanticLayer.BEAM_IN_SITU_LABEL].push(l);
       }
-      if (/title|name|图名|view/i.test(l)) {
+      // General Labels (Dimensions, Names)
+      // Exclude "In-Situ" (原位标注) from general labels if possible, to keep them clean
+      else if (/dim|anno|text|标注|文字|label/i.test(l)) {
+          config[SemanticLayer.BEAM_LABEL].push(l);
+      }
+      
+      // Viewport Titles: Added 'pub_text' as requested
+      if (/title|name|图名|view|pub_text/i.test(l)) {
           config[SemanticLayer.VIEWPORT_TITLE].push(l);
       }
     });
@@ -161,6 +174,12 @@ const App: React.FC = () => {
 
            const parsed = parseDxf(content, usedEnc);
            
+           // Determine used layers to filter out empty ones
+           const usedLayers = new Set<string>();
+           parsed.entities.forEach(e => usedLayers.add(e.layer));
+           // Blocks also contain entities on layers
+           Object.values(parsed.blocks).forEach(ents => ents.forEach(e => usedLayers.add(e.layer)));
+
            // Determine colors for new layers
            parsed.layers.forEach((layer) => {
               if (newColors[layer]) return; // Skip if already colored
@@ -196,7 +215,7 @@ const App: React.FC = () => {
              data: parsed,
              activeLayers: new Set(parsed.layers),
              filledLayers: new Set(),
-             layerConfig: autoDetectLayers(parsed.layers),
+             layerConfig: autoDetectLayers(parsed.layers, usedLayers),
              splitRegions: null
            });
         }));

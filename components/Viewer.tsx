@@ -1,3 +1,4 @@
+
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { DxfData, LayerColors, Bounds, SearchResult, SemanticLayer } from '../types';
 import { ZoomIn, ZoomOut, Maximize, MousePointer2, Crosshair } from 'lucide-react';
@@ -37,6 +38,9 @@ export const Viewer: React.FC<ViewerProps> = ({
   const [transform, setTransform] = useState({ k: 1, x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [lastMouse, setLastMouse] = useState({ x: 0, y: 0 });
+  
+  // Track if mouse moved during a press to distinguish Click from Drag
+  const hasMoved = useRef(false);
   
   // Inspection State
   const [mouseWorldPos, setMouseWorldPos] = useState<{x: number, y: number} | null>(null);
@@ -133,19 +137,7 @@ export const Viewer: React.FC<ViewerProps> = ({
   };
 
   const handleMouseDown = (e: React.MouseEvent) => {
-    // If Picking Mode is Active, Click selects the layer
-    if (pickingTarget && data) {
-        // Force a hit test immediately
-        const worldX = (e.clientX - containerRef.current!.getBoundingClientRect().left - transform.x) / transform.k;
-        const worldY = (containerRef.current!.getBoundingClientRect().height - (e.clientY - containerRef.current!.getBoundingClientRect().top) - transform.y) / transform.k;
-        const tolerance = 15 / transform.k; // slightly larger tolerance for picking
-        const layers = findLayersAtPoint({x: worldX, y: worldY}, data.entities, data.blocks, data.blockBasePoints, activeLayers, tolerance);
-        if (layers.length > 0 && onLayerPicked) {
-            onLayerPicked(layers[0]);
-        }
-        return; // Don't drag if picking
-    }
-
+    hasMoved.current = false;
     setIsDragging(true);
     setLastMouse({ x: e.clientX, y: e.clientY });
   };
@@ -166,6 +158,12 @@ export const Viewer: React.FC<ViewerProps> = ({
     if (isDragging) {
         const dx = e.clientX - lastMouse.x;
         const dy = e.clientY - lastMouse.y;
+        
+        // Threshold check to confirm drag intention vs jittery click
+        if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+             hasMoved.current = true;
+        }
+
         setLastMouse({ x: e.clientX, y: e.clientY });
         setTransform(prev => ({ ...prev, x: prev.x + dx, y: prev.y - dy })); 
     }
@@ -182,7 +180,30 @@ export const Viewer: React.FC<ViewerProps> = ({
     }
   };
 
-  const handleMouseUp = () => setIsDragging(false);
+  const handleMouseUp = (e: React.MouseEvent) => {
+    setIsDragging(false);
+
+    // If we are in picking mode and the mouse hasn't moved significantly, treat as a Click/Pick
+    if (pickingTarget && !hasMoved.current && data && onLayerPicked && containerRef.current) {
+         const rect = containerRef.current.getBoundingClientRect();
+         const worldX = (e.clientX - rect.left - transform.x) / transform.k;
+         const worldY = (rect.height - (e.clientY - rect.top) - transform.y) / transform.k;
+         const tolerance = 15 / transform.k; // slightly larger tolerance for picking
+         
+         const layers = findLayersAtPoint(
+            {x: worldX, y: worldY}, 
+            data.entities, 
+            data.blocks, 
+            data.blockBasePoints, 
+            activeLayers, 
+            tolerance
+         );
+         
+         if (layers.length > 0) {
+             onLayerPicked(layers[0]);
+         }
+    }
+  };
 
   const handleZoomBtn = (factor: number) => {
     if (!containerRef.current) return;
