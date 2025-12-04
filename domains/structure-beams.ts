@@ -1,5 +1,6 @@
 
 import React from 'react';
+import { jsPDF } from 'jspdf';
 import { DxfEntity, EntityType, Point, Bounds, ProjectFile } from '../types';
 import { extractEntities } from '../utils/dxfHelpers';
 import { updateProject, getMergeBaseBounds, findEntitiesInAllProjects, isEntityInBounds, filterEntitiesInBounds, isPointInBounds, expandBounds, boundsOverlap } from './structure-common';
@@ -1469,11 +1470,214 @@ export const runBeamTopologyMerge = (
     console.log(`Step 4: Topology Merge Complete. Generated ${finalEntities.length} fragments.`);
 };
 
-export const runBeamPropagation = (
+export const runBeamCalculation = (
     activeProject: ProjectFile,
     projects: ProjectFile[],
     setProjects: React.Dispatch<React.SetStateAction<ProjectFile[]>>,
     setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>
 ) => {
-    console.log("Step 5: Propagation");
+    // 1. Data Preparation (Duplicate logic from Step 4 to ensure calculation accuracy on fragments)
+    const infos = activeProject.beamStep3AttrInfos;
+    const intersections = activeProject.beamStep2InterInfos;
+
+    if (!infos || infos.length === 0 || !intersections || intersections.length === 0) {
+        alert("Missing beam data. Please run previous steps.");
+        return;
+    }
+
+    const beamCuts = new Map<number, Array<{min: number, max: number}>>();
+
+    // Helper: Code Priority
+    const getCodePriority = (code: string | undefined): number => {
+        if (!code) return 0;
+        const c = code.toUpperCase();
+        if (c.startsWith('WKL')) return 5;
+        if (c.startsWith('KL')) return 4;
+        if (c.startsWith('LL')) return 3;
+        if (c.startsWith('XL')) return 2;
+        if (c.startsWith('L')) return 1;
+        return 0;
+    };
+
+    const getBeamLen = (info: import('../types').BeamStep3AttrInfo): number => {
+         const poly: DxfEntity = { type: EntityType.LWPOLYLINE, vertices: info.vertices, closed: true, layer: 'TEMP' };
+         const obb = computeOBB(poly);
+         return obb ? obb.halfLen * 2 : 0;
+    };
+
+    // Re-calculate Cuts
+    intersections.forEach(inter => {
+        const involvedIndices = inter.beamIndexes;
+        if (involvedIndices.length < 2) return;
+
+        const beams = involvedIndices.map(idx => {
+            const info = infos.find(i => i.beamIndex === idx);
+            return info ? { idx, info, priority: getCodePriority(info.code), len: getBeamLen(info) } : null;
+        }).filter(b => b !== null) as { idx: number, info: import('../types').BeamStep3AttrInfo, priority: number, len: number }[];
+
+        if (beams.length < 2) return;
+
+        beams.sort((a, b) => {
+             const wA = a.info.width || 0;
+             const wB = b.info.width || 0;
+             if (Math.abs(wA - wB) > 10) return wB - wA; 
+             const hA = a.info.height || 0;
+             const hB = b.info.height || 0;
+             if (Math.abs(hA - hB) > 10) return hB - hA; 
+             if (a.priority !== b.priority) return b.priority - a.priority; 
+             return b.len - a.len; 
+        });
+
+        const secondaries = beams.slice(1);
+        const iBounds = inter.bounds;
+        const iPolyPoints = [
+            { x: iBounds.startX, y: iBounds.startY },
+            { x: iBounds.endX, y: iBounds.startY },
+            { x: iBounds.endX, y: iBounds.endY },
+            { x: iBounds.startX, y: iBounds.endY }
+        ];
+
+        secondaries.forEach(sec => {
+            const poly: DxfEntity = { type: EntityType.LWPOLYLINE, vertices: sec.info.vertices, closed: true, layer: 'TEMP' };
+            const obb = computeOBB(poly);
+            if (!obb) return;
+
+            const project = (p: Point) => (p.x - obb.center.x) * obb.u.x + (p.y - obb.center.y) * obb.u.y;
+            let minP = Infinity, maxP = -Infinity;
+
+            iPolyPoints.forEach(p => {
+                 const t = project(p);
+                 minP = Math.min(minP, t);
+                 maxP = Math.max(maxP, t);
+            });
+            
+            if (!beamCuts.has(sec.idx)) beamCuts.set(sec.idx, []);
+            beamCuts.get(sec.idx)!.push({ min: minP, max: maxP });
+        });
+    });
+
+    // 2. Calculate Volumes
+    interface BeamStat {
+        id: string;
+        code: string;
+        width: number;
+        height: number;
+        length: number;
+        volume: number;
+    }
+
+    const stats: BeamStat[] = [];
+    let totalVolume = 0;
+
+    infos.forEach(info => {
+        const poly: DxfEntity = { type: EntityType.LWPOLYLINE, vertices: info.vertices, closed: true, layer: 'TEMP' };
+        const obb = computeOBB(poly);
+        if (!obb) return;
+
+        const cuts = beamCuts.get(info.beamIndex);
+        let segments = [{ start: obb.minT, end: obb.maxT }];
+
+        if (cuts && cuts.length > 0) {
+            cuts.sort((a, b) => a.min - b.min);
+            const mergedCuts: {min: number, max: number}[] = [];
+            let curr = cuts[0];
+            for(let i=1; i<cuts.length; i++) {
+                if (cuts[i].min < curr.max) {
+                    curr.max = Math.max(curr.max, cuts[i].max);
+                } else {
+                    mergedCuts.push(curr);
+                    curr = cuts[i];
+                }
+            }
+            mergedCuts.push(curr);
+
+            for (const cut of mergedCuts) {
+                const nextSegments: {start: number, end: number}[] = [];
+                for (const seg of segments) {
+                    if (cut.min > seg.start && cut.max < seg.end) {
+                        nextSegments.push({ start: seg.start, end: cut.min });
+                        nextSegments.push({ start: cut.max, end: seg.end });
+                    } else if (cut.min <= seg.start && cut.max > seg.start && cut.max < seg.end) {
+                         nextSegments.push({ start: cut.max, end: seg.end });
+                    } else if (cut.min > seg.start && cut.min < seg.end && cut.max >= seg.end) {
+                        nextSegments.push({ start: seg.start, end: cut.min });
+                    } else if (cut.min <= seg.start && cut.max >= seg.end) {
+                        // Drop
+                    } else {
+                        nextSegments.push(seg);
+                    }
+                }
+                segments = nextSegments;
+            }
+        }
+
+        let totalLen = 0;
+        segments.forEach(s => totalLen += (s.end - s.start));
+        
+        // Convert mm to m
+        const L_m = totalLen / 1000;
+        const W_m = (info.width || 0) / 1000;
+        const H_m = (info.height || 0) / 1000;
+        const vol = L_m * W_m * H_m;
+
+        if (vol > 0) {
+            stats.push({
+                id: info.id,
+                code: info.code,
+                width: info.width || 0,
+                height: info.height || 0,
+                length: Math.round(totalLen),
+                volume: parseFloat(vol.toFixed(3))
+            });
+            totalVolume += vol;
+        }
+    });
+
+    // 3. Generate PDF
+    const doc = new jsPDF();
+    doc.setFontSize(16);
+    doc.text(`Beam Calculation Report: ${activeProject.name}`, 14, 20);
+    
+    doc.setFontSize(12);
+    doc.text(`Total Volume: ${totalVolume.toFixed(3)} m³`, 14, 30);
+
+    let y = 40;
+    doc.setFontSize(10);
+    doc.text("ID", 14, y);
+    doc.text("Code", 40, y);
+    doc.text("W (mm)", 80, y);
+    doc.text("H (mm)", 100, y);
+    doc.text("Len (mm)", 120, y);
+    doc.text("Vol (m³)", 150, y);
+    
+    doc.line(14, y + 2, 190, y + 2);
+    y += 8;
+
+    stats.forEach((item, index) => {
+        if (y > 270) {
+            doc.addPage();
+            y = 20;
+            // Header again
+            doc.text("ID", 14, y);
+            doc.text("Code", 40, y);
+            doc.text("W (mm)", 80, y);
+            doc.text("H (mm)", 100, y);
+            doc.text("Len (mm)", 120, y);
+            doc.text("Vol (m³)", 150, y);
+            doc.line(14, y + 2, 190, y + 2);
+            y += 8;
+        }
+        
+        doc.text(item.id, 14, y);
+        doc.text(item.code, 40, y);
+        doc.text(item.width.toString(), 80, y);
+        doc.text(item.height.toString(), 100, y);
+        doc.text(item.length.toString(), 120, y);
+        doc.text(item.volume.toFixed(3), 150, y);
+        
+        y += 6;
+    });
+
+    doc.save(`${activeProject.name.replace('.dxf', '')}_Beam_Calculation.pdf`);
+    console.log(`Calculation Complete. Total Volume: ${totalVolume.toFixed(3)} m3`);
 };

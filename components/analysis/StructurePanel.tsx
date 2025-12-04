@@ -1,10 +1,11 @@
+
 import React from 'react';
 import { ProjectFile } from '../../types';
 import { runCalculateSplitRegions, runMergeViews } from '../../domains/structure-views';
 import { runCalculateColumns, runCalculateWalls } from '../../domains/structure-verticals';
-import { runBeamRawGeneration, runBeamIntersectionProcessing, runBeamAttributeMounting, runBeamTopologyMerge, runBeamPropagation } from '../../domains/structure-beams';
+import { runBeamRawGeneration, runBeamIntersectionProcessing, runBeamAttributeMounting, runBeamTopologyMerge, runBeamCalculation } from '../../domains/structure-beams';
 import { Button } from '../Button';
-import { Grid, Merge, Box, ArrowRightLeft, AlignJustify, Tag, GitMerge, Radio, Spline } from 'lucide-react';
+import { Grid, Merge, Box, ArrowRightLeft, AlignJustify, Tag, GitMerge, Radio, Spline, Calculator } from 'lucide-react';
 
 interface StructurePanelProps {
     activeProject: ProjectFile | null;
@@ -123,13 +124,13 @@ export const StructurePanel: React.FC<StructurePanelProps> = ({
                         Step 4: Topology Merge
                     </Button>
                     <Button 
-                        onClick={() => activeProject && runBeamPropagation(activeProject, projects, setProjects, setLayerColors)}
+                        onClick={() => activeProject && runBeamCalculation(activeProject, projects, setProjects, setLayerColors)}
                         disabled={!activeProject || isLoading} 
                         variant="secondary" 
                         className="w-full text-xs py-1.5 justify-start pl-3"
-                        icon={<Radio size={12} className="text-pink-500"/>}
+                        icon={<Calculator size={12} className="text-pink-500"/>}
                     >
-                        Step 5: Propagation
+                        Step 5: Calculate & Export PDF
                     </Button>
                 </div>
             </div>
