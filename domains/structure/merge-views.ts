@@ -10,6 +10,7 @@ import {
   getGridIntersections,
   distancePointToLine
 } from '../../utils/geometryUtils';
+import { updateProject } from './common';
 
 // --- CONSTANTS ---
 const RESULT_LAYER_H = 'MERGE_LABEL_H';
@@ -35,7 +36,6 @@ const isVerticalAngle = (deg: number) => {
     const a = normalizeAngle(deg) % 180;
     return Math.abs(a - 90) <= 15;
 };
-const dist = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
 
 // --- 1. CALCULATION LOGIC ---
 
@@ -62,13 +62,23 @@ export const calculateMergedViewData = (activeProject: ProjectFile): MergedViewD
     const mappings: ViewMergeMapping[] = [];
 
     // Helper to identify label layers
+    // EXPLICITLY EXCLUDE IN-SITU LAYERS
+    const inSituSet = new Set(activeProject.layerConfig[SemanticLayer.BEAM_IN_SITU_LABEL] || []);
+    const labelSet = new Set(activeProject.layerConfig[SemanticLayer.BEAM_LABEL] || []);
+
     const isLabelLayer = (layer: string) => {
-        // Strict config check
-        if (activeProject.layerConfig[SemanticLayer.BEAM_LABEL].includes(layer)) return true;
+        // 1. If it's explicitly marked as In-Situ, exclude it from MERGE_LABEL_H/V
+        if (inSituSet.has(layer)) return false;
+
+        // 2. Strict config check for Beam Labels
+        if (labelSet.has(layer)) return true;
         
-        // Heuristics
+        // 3. Heuristics (Fallback)
         const u = layer.toUpperCase();
         if (u.includes('AXIS') || u.includes('中心线')) return false;
+        // Exclude specific In-Situ keywords if not already caught by config
+        if (u.includes('原位') || u.includes('IN-SITU') || u.includes('IN_SITU')) return false;
+
         return u.includes('标注') || u.includes('DIM') || u.includes('LABEL') || /^Z[\u4e00-\u9fa5]/.test(layer);
     };
 
@@ -125,7 +135,8 @@ export const calculateMergedViewData = (activeProject: ProjectFile): MergedViewD
                 targetRegionIndex: regions.indexOf(baseView),
                 vector: vec,
                 bounds: view.bounds,
-                title: view.title
+                // Use parsed prefix if available (removes (1), (2), etc.)
+                title: view.info ? view.info.prefix : view.title
             });
 
             // Extract & Shift Entities
@@ -172,172 +183,137 @@ export const calculateMergedViewData = (activeProject: ProjectFile): MergedViewD
 
     // Parse Beam Labels from Merged Entities
     const beamLabels: BeamLabelInfo[] = [];
-    const entitiesByResultLayer: Record<string, DxfEntity[]> = { [RESULT_LAYER_H]: [], [RESULT_LAYER_V]: [] };
-    
+    const extras: DxfEntity[] = [];
+
     tempMergedEntities.forEach(item => {
-        if (entitiesByResultLayer[item.layer]) entitiesByResultLayer[item.layer].push(item.ent);
-    });
-
-    [RESULT_LAYER_H, RESULT_LAYER_V].forEach(layer => {
-        const ents = entitiesByResultLayer[layer];
-        const texts = ents.filter(e => (e.type === EntityType.TEXT || e.type === EntityType.ATTRIB) && e.start);
-        const leaders = ents.filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
-
-        texts.forEach((txt, idx) => {
+        // Separate Text from Geometry (Leaders)
+        if (item.ent.type === EntityType.TEXT || item.ent.type === EntityType.ATTRIB) {
+             const txt = item.ent;
              if (!txt.start) return;
-             const rot = txt.rotation ?? txt.startAngle ?? 0;
-             const isVert = isVerticalAngle(rot);
-             const basePoint = (isVert && txt.end) ? txt.end : txt.start!;
-
-             // Find Leader
-             let bestSeg: { start: Point, end: Point } | null = null;
-             let bestDist = Infinity;
-
-             const checkSeg = (p1: Point, p2: Point) => {
-                 const d = distancePointToLine(basePoint, p1, p2);
-                 if (d < bestDist) { bestDist = d; bestSeg = { start: p1, end: p2 }; }
-             };
-
-             leaders.forEach(l => {
-                 if (l.type === EntityType.LINE && l.start && l.end) checkSeg(l.start, l.end);
-                 else if (l.type === EntityType.LWPOLYLINE && l.vertices) {
-                     for (let i=0; i<l.vertices.length-1; i++) checkSeg(l.vertices[i], l.vertices[i+1]);
-                 }
-             });
-
-             if (bestDist > 1200 || !bestSeg) return; // No leader found close enough
-
-             let lStart = bestSeg.start;
-             let lEnd = bestSeg.end;
-             if (dist(basePoint, lEnd) < dist(basePoint, lStart)) {
-                 lStart = bestSeg.end; lEnd = bestSeg.start;
-             }
              
-             const orientation = Math.atan2(lEnd.y - lStart.y, lEnd.x - lStart.x) * 180 / Math.PI;
+             // Use original rotation/orientation from the entity
+             const orientation = txt.rotation ?? txt.startAngle ?? 0;
 
              // Parse Text
              const rawText = (txt.text || '').trim();
              const firstLine = rawText.split('\n')[0].trim();
              
-             const richMatch = firstLine.match(/^([A-Z0-9\-]+)\(([^)]+)\)\s+(\d+)[xX*](\d+)/i);
-             const simpleDimMatch = firstLine.match(/^([A-Z0-9\-]+)\s+(\d+)[xX*](\d+)/i);
-             const codeSpanMatch = firstLine.match(/^([A-Z0-9\-]+)\(([^)]+)\)/i);
-             const codeOnlyMatch = firstLine.match(/^([A-Z0-9\-]+)$/i);
+             // Basic Parsing: "KL-1(2)" or "WKL1"
+             const richMatch = firstLine.match(/^([A-Z0-9\-]+)(?:\((.+)\))?/);
+             let parsed = undefined;
 
-             let parsed: any = undefined;
-             if (richMatch) parsed = { code: richMatch[1], span: richMatch[2], width: parseInt(richMatch[3]), height: parseInt(richMatch[4]) };
-             else if (simpleDimMatch) parsed = { code: simpleDimMatch[1], span: null, width: parseInt(simpleDimMatch[2]), height: parseInt(simpleDimMatch[3]) };
-             else if (codeSpanMatch) parsed = { code: codeSpanMatch[1], span: codeSpanMatch[2] };
-             else if (codeOnlyMatch) parsed = { code: codeOnlyMatch[1], span: null };
+             if (richMatch) {
+                 const code = richMatch[1];
+                 const span = richMatch[2] || null;
+
+                 // Search for dimensions in any line
+                 let width = 0;
+                 let height = 0;
+                 
+                 const dimMatch = rawText.match(/(\d+)[xX*×](\d+)/);
+                 if (dimMatch) {
+                     width = parseInt(dimMatch[1], 10);
+                     height = parseInt(dimMatch[2], 10);
+                 }
+
+                 parsed = { code, span, width, height };
+             }
 
              beamLabels.push({
-                 id: `${layer}-${idx}`,
-                 sourceLayer: layer,
-                 orientation,
+                 id: `LBL-${beamLabels.length}`,
+                 sourceLayer: item.layer,
+                 orientation: orientation,
                  textRaw: rawText,
                  textInsert: txt.start,
-                 leaderStart: lStart,
-                 leaderEnd: lEnd,
+                 leaderStart: null, // Leaders removed as per request
+                 leaderEnd: null,
                  parsed
              });
-        });
-    });
-
-    // Fill missing dims logic
-    const byCode = new Map<string, {width: number, height: number}>();
-    beamLabels.forEach(l => {
-        if (l.parsed && l.parsed.width && l.parsed.height) byCode.set(l.parsed.code, { width: l.parsed.width, height: l.parsed.height });
-    });
-    beamLabels.forEach(l => {
-        if (l.parsed && (!l.parsed.width || !l.parsed.height)) {
-            const donor = byCode.get(l.parsed.code);
-            if (donor) { l.parsed.width = donor.width; l.parsed.height = donor.height; }
+        } else {
+             // Keep geometry (leaders) in extras
+             extras.push({
+                 ...item.ent,
+                 layer: item.layer
+             });
         }
     });
 
-    return {
-        mappings,
-        beamLabels
-    };
+    return { mappings, beamLabels, extras };
 };
 
 // --- 2. RENDERING LOGIC ---
 
-export const generateMergedViewEntities = (data: MergedViewData): { entities: DxfEntity[], layers: string[] } => {
+export const generateMergedViewEntities = (data: MergedViewData): DxfEntity[] => {
     const entities: DxfEntity[] = [];
 
-    // 1. Draw Labels (Text + Leaders)
-    data.beamLabels.forEach(lbl => {
-        const layer = lbl.sourceLayer; // H or V
-        
-        // Text
-        if (lbl.textInsert) {
-            entities.push({
-                type: EntityType.TEXT,
-                layer,
-                text: lbl.textRaw,
-                start: lbl.textInsert,
-                radius: 250, // Standardize size
-                startAngle: layer === RESULT_LAYER_V ? 90 : 0
-            });
-        }
-
-        // Leader
-        if (lbl.leaderStart && lbl.leaderEnd) {
-            entities.push({
-                type: EntityType.LINE,
-                layer,
-                start: lbl.leaderStart,
-                end: lbl.leaderEnd
-            });
-            // Arrowhead (Circle for simplicity)
-            entities.push({
-                type: EntityType.CIRCLE,
-                layer,
-                center: lbl.leaderEnd,
-                radius: 40
-            });
-        }
-    });
-
-    // 2. Draw Mappings (Base Regions in Yellow)
-    // Identify unique target regions (Base Views) and draw them
+    // 1. Draw MERGE_VIEW frames
+    // We only need to draw the bounds of the "Base View" for each group
+    // In our mappings, multiple sources map to one target.
+    // We can just draw the Target Region (Base View) bounds once per group.
     
-    data.mappings.forEach(m => {
-        const shiftedMinX = m.bounds.minX + m.vector.x;
-        const shiftedMinY = m.bounds.minY + m.vector.y;
-        const shiftedMaxX = m.bounds.maxX + m.vector.x;
-        const shiftedMaxY = m.bounds.maxY + m.vector.y;
+    const processedTargets = new Set<number>();
 
-        // Draw Boundary Box
-        entities.push({
+    data.mappings.forEach(m => {
+         if (processedTargets.has(m.targetRegionIndex)) return;
+         processedTargets.add(m.targetRegionIndex);
+         
+         const b = m.bounds; // Note: This is Source Bounds.
+         // Wait, we need the Target Bounds relative to the merge.
+         // Actually, if we shifted everything TO the target, the target's bounds are the reference.
+         // BUT, m.vector is Source -> Target.
+         // So Source.Bounds + Vector = Target Location in Merged Space.
+         
+         // For the base view, vector is 0,0.
+         // Let's just draw the bounds of the destination region.
+         // We can reconstruct it:
+         const destMinX = b.minX + m.vector.x;
+         const destMinY = b.minY + m.vector.y;
+         const destMaxX = b.maxX + m.vector.x;
+         const destMaxY = b.maxY + m.vector.y;
+
+         entities.push({
             type: EntityType.LWPOLYLINE,
             layer: RESULT_LAYER_VIEW,
             closed: true,
             vertices: [
-                { x: shiftedMinX, y: shiftedMinY },
-                { x: shiftedMaxX, y: shiftedMinY },
-                { x: shiftedMaxX, y: shiftedMaxY },
-                { x: shiftedMinX, y: shiftedMaxY }
+                {x: destMinX, y: destMinY},
+                {x: destMaxX, y: destMinY},
+                {x: destMaxX, y: destMaxY},
+                {x: destMinX, y: destMaxY}
             ]
-        });
+         });
 
-        // Draw Title
-        if (m.title) {
-            entities.push({
-                type: EntityType.TEXT,
-                layer: RESULT_LAYER_VIEW,
-                text: m.title,
-                start: { x: shiftedMinX, y: shiftedMaxY + 500 },
-                radius: 250
-            });
-        }
+         // Draw Title
+         // Use the stripped title (m.title) which we cleaned in calculateMergedViewData
+         const title = m.title || "Merged View";
+         entities.push({
+             type: EntityType.TEXT,
+             layer: RESULT_LAYER_VIEW,
+             text: title,
+             start: {x: destMinX, y: destMaxY + 200},
+             radius: 350
+         });
     });
 
-    return {
-        entities,
-        layers: [RESULT_LAYER_H, RESULT_LAYER_V, RESULT_LAYER_VIEW]
-    };
+    // 2. Draw Labels
+    data.beamLabels.forEach(lbl => {
+        if (!lbl.textInsert) return;
+        entities.push({
+            type: EntityType.TEXT,
+            layer: lbl.sourceLayer, // MERGE_LABEL_H or V
+            text: lbl.textRaw,
+            start: lbl.textInsert,
+            radius: 250, // Standard size
+            startAngle: lbl.orientation
+        });
+    });
+
+    // 3. Draw Extras (Leaders)
+    if (data.extras) {
+        entities.push(...data.extras);
+    }
+
+    return entities;
 };
 
 // --- 3. ORCHESTRATION ---
@@ -348,28 +324,18 @@ export const restoreMergedViews = (
     setProjects: React.Dispatch<React.SetStateAction<ProjectFile[]>>,
     setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>
 ) => {
-    console.log("Restoring Merged Views...");
-    const { entities, layers } = generateMergedViewEntities(data);
+    console.log("Restoring Merged View Analysis...");
+    const entities = generateMergedViewEntities(data);
     
+    // Update Colors
     setLayerColors(prev => ({ ...prev, ...RESULT_COLORS }));
+
+    // Update Project
+    updateProject(activeProject, setProjects, setLayerColors, RESULT_LAYER_VIEW, entities, RESULT_COLORS[RESULT_LAYER_VIEW], [RESULT_LAYER_H, RESULT_LAYER_V], false);
 
     setProjects(prev => prev.map(p => {
         if (p.id === activeProject.id) {
-            const updatedData = {
-                ...p.data,
-                entities: [...p.data.entities, ...entities],
-                layers: Array.from(new Set([...p.data.layers, ...layers]))
-            };
-            const activeLayers = new Set(p.activeLayers);
-            layers.forEach(l => activeLayers.add(l));
-
-            return {
-                ...p,
-                data: updatedData,
-                activeLayers,
-                mergedViewData: data,
-                beamLabels: data.beamLabels
-            };
+            return { ...p, mergedViewData: data };
         }
         return p;
     }));
@@ -380,41 +346,12 @@ export const runMergeViews = (
     setProjects: React.Dispatch<React.SetStateAction<ProjectFile[]>>,
     setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>
 ) => {
-    // 1. Calculate
-    const mergedData = calculateMergedViewData(activeProject);
-    if (!mergedData) {
-        alert("Could not merge views. Ensure Split Views is run first.");
+    const data = calculateMergedViewData(activeProject);
+    if (!data) {
+        alert("Could not merge views. Ensure views are split and axes are configured.");
         return;
     }
 
-    // 2. Save
-    saveStoredAnalysis(activeProject.name, { mergedViewData: mergedData });
-
-    // 3. Render
-    const { entities, layers } = generateMergedViewEntities(mergedData);
-
-    // 4. Update UI
-    setLayerColors(prev => ({ ...prev, ...RESULT_COLORS }));
-    setProjects(prev => prev.map(p => {
-        if (p.id === activeProject.id) {
-            const updatedData = {
-                ...p.data,
-                entities: [...p.data.entities, ...entities],
-                layers: Array.from(new Set([...p.data.layers, ...layers]))
-            };
-            const activeLayers = new Set(p.activeLayers);
-            layers.forEach(l => activeLayers.add(l));
-
-            return {
-                ...p,
-                data: updatedData,
-                activeLayers,
-                mergedViewData: mergedData,
-                beamLabels: mergedData.beamLabels
-            };
-        }
-        return p;
-    }));
-    
-    console.log(`Merged Views Complete. Found ${mergedData.beamLabels.length} labels.`);
+    saveStoredAnalysis(activeProject.name, { mergedViewData: data });
+    restoreMergedViews(activeProject, data, setProjects, setLayerColors);
 };

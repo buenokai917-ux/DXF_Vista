@@ -170,6 +170,25 @@ export interface BeamLabelInfo {
 export interface MergedViewData {
     mappings: ViewMergeMapping[];
     beamLabels: BeamLabelInfo[];
+    extras: DxfEntity[]; // Leader lines and other geometry from label layers
+}
+
+export interface ColumnInfo {
+    id: string;
+    layer: string;
+    shape: 'rect' | 'circle' | 'poly';
+    vertices?: Point[];
+    center?: Point;
+    radius?: number;
+    bounds: Bounds;
+}
+
+export interface WallInfo {
+    id: string;
+    layer: string;
+    thickness: number;
+    vertices: Point[];
+    bounds: Bounds;
 }
 
 export interface ProjectFile {
@@ -186,6 +205,8 @@ export interface ProjectFile {
   beamStep2InterInfos?: BeamIntersectionInfo[];
   beamStep3AttrInfos?: BeamStep3AttrInfo[];
   beamStep4TopologyInfos?: BeamStep4TopologyInfo[];
+  columns?: ColumnInfo[];
+  walls?: WallInfo[];
 }
 
 export type AnalysisDomain = 'STRUCTURE' | 'LANDSCAPE' | 'ELECTRICAL';

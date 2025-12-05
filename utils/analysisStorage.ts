@@ -1,11 +1,13 @@
 
-import { ProjectFile, ViewportRegion, BeamStep2GeoInfo, BeamIntersectionInfo, BeamStep3AttrInfo, BeamStep4TopologyInfo, MergedViewData } from '../types';
+import { ProjectFile, ViewportRegion, BeamStep2GeoInfo, BeamIntersectionInfo, BeamStep3AttrInfo, BeamStep4TopologyInfo, MergedViewData, ColumnInfo, WallInfo } from '../types';
 
 const STORAGE_KEY = 'DXF_VISTA_ANALYSIS_DATA';
 
 export interface AnalysisData {
     splitRegions?: ViewportRegion[] | null;
     mergedViewData?: MergedViewData;
+    columns?: ColumnInfo[];
+    walls?: WallInfo[];
     beamStep2GeoInfos?: BeamStep2GeoInfo[];
     beamStep2InterInfos?: BeamIntersectionInfo[];
     beamStep3AttrInfos?: BeamStep3AttrInfo[];

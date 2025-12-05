@@ -1,3 +1,4 @@
+
 import { DxfEntity, EntityType, Point, Bounds } from '../types';
 
 export const distance = (p1: Point, p2: Point): number => {
@@ -329,7 +330,7 @@ const hasAxisBetween = (l1: DxfEntity, l2: DxfEntity, axisLines: DxfEntity[], ga
     return false;
 };
 
-const createPolygonFromPair = (
+export const createPolygonFromPair = (
     l1: DxfEntity, 
     l2: DxfEntity, 
     layer: string, 
@@ -353,7 +354,6 @@ const createPolygonFromPair = (
 
     const tMinOverlap = Math.max(Math.min(tA1, tA2), Math.min(tB1, tB2));
     const tMaxOverlap = Math.min(Math.max(tA1, tA2), Math.max(tB1, tB2));
-
     const tMinUnion = Math.min(Math.min(tA1, tA2), Math.min(tB1, tB2));
     const tMaxUnion = Math.max(Math.max(tA1, tA2), Math.max(tB1, tB2));
 
@@ -362,57 +362,77 @@ const createPolygonFromPair = (
     const projL2Start = { x: l1.start.x + u.x * tB1, y: l1.start.y + u.y * tB1 };
     const vPerp = { x: l2.start.x - projL2Start.x, y: l2.start.y - projL2Start.y };
 
-    // UPDATED: Use Boolean Subtraction for BOTH Beams and Walls to handle obstacles (Columns) in the middle
+    // UPDATED: Use Center-Line Scanline logic for obstacle detection.
+    // This allows beams to exist inside the empty part of concave (e.g. C-shaped) walls
+    // and prevents grazing walls from deleting the beam.
     if (mode === 'BEAM' || mode === 'WALL') {
         const blockers: [number, number][] = [];
         
+        // Scan line at the center of the beam (v = gap / 2)
+        const scanY = gap / 2;
+        const unitVx = vPerp.x / gap;
+        const unitVy = vPerp.y / gap;
+
         for (const obs of obstacles) {
-             const bounds = getEntityBounds(obs);
-             if (!bounds) continue;
+             let polyVerts: Point[] = [];
              
-             const corners = [
-                 {x: bounds.minX, y: bounds.minY},
-                 {x: bounds.maxX, y: bounds.minY},
-                 {x: bounds.maxX, y: bounds.maxY},
-                 {x: bounds.minX, y: bounds.maxY}
-             ];
-             
-             let minU = Infinity, maxU = -Infinity;
-             let minV = Infinity, maxV = -Infinity;
-             
-             for (const c of corners) {
-                 const relX = c.x - l1.start!.x;
-                 const relY = c.y - l1.start!.y;
-                 const tU = relX * u.x + relY * u.y;
-                 const nV = { x: vPerp.x/gap, y: vPerp.y/gap };
-                 const tV = relX * nV.x + relY * nV.y;
+             if (obs.type === EntityType.LWPOLYLINE && obs.vertices && obs.vertices.length > 2) {
+                 polyVerts = obs.vertices;
+             } 
+             else if (obs.type === EntityType.CIRCLE && obs.center && obs.radius) {
+                 // Analytical Circle Intersection
+                 const dx = obs.center.x - l1.start!.x;
+                 const dy = obs.center.y - l1.start!.y;
+                 const localC_U = dx * u.x + dy * u.y;
+                 const localC_V = dx * unitVx + dy * unitVy;
                  
-                 minU = Math.min(minU, tU);
-                 maxU = Math.max(maxU, tU);
-                 minV = Math.min(minV, tV);
-                 maxV = Math.max(maxV, tV);
+                 const dist = Math.abs(localC_V - scanY);
+                 if (dist < obs.radius) {
+                     const chordHalf = Math.sqrt(obs.radius * obs.radius - dist * dist);
+                     blockers.push([localC_U - chordHalf, localC_U + chordHalf]);
+                 }
+                 continue;
+             }
+             else {
+                 // Skip unsupported shapes (lines, open polys) to avoid false positives
+                 continue;
+             }
+
+             // Transform vertices to local (u, v) space
+             const localVerts = polyVerts.map(p => {
+                 const dx = p.x - l1.start!.x;
+                 const dy = p.y - l1.start!.y;
+                 return {
+                     u: dx * u.x + dy * u.y,
+                     v: dx * unitVx + dy * unitVy
+                 };
+             });
+
+             const nodes: number[] = [];
+             const numV = localVerts.length;
+             for (let i = 0; i < numV; i++) {
+                 const p1 = localVerts[i];
+                 const p2 = localVerts[(i + 1) % numV]; // Implicit close
+
+                 // Check if edge crosses the scan line
+                 if ((p1.v < scanY && p2.v >= scanY) || (p1.v >= scanY && p2.v < scanY)) {
+                     const t = (scanY - p1.v) / (p2.v - p1.v);
+                     const interU = p1.u + t * (p2.u - p1.u);
+                     nodes.push(interU);
+                 }
              }
              
-             const beamVMin = 0;
-             const beamVMax = gap;
+             nodes.sort((a, b) => a - b);
              
-             const latOverlapStart = Math.max(minV, beamVMin);
-             const latOverlapEnd = Math.min(maxV, beamVMax);
-             
-             if (latOverlapEnd - latOverlapStart > 10) {
-                 blockers.push([minU, maxU]);
+             // Create intervals using Even-Odd rule (inside polygon)
+             for (let k = 0; k < nodes.length; k += 2) {
+                 if (k + 1 < nodes.length) {
+                     blockers.push([nodes[k], nodes[k+1]]);
+                 }
              }
         }
         
         const mergedBlockers = mergeIntervals(blockers);
-        // For Walls, we might want to use tMaxOverlap instead of tMaxUnion if we strictly follow the overlap
-        // But usually extending to union closes corners. Let's keep logic consistent.
-        // For walls, trim to union might be better for corners? 
-        // Actually, walls usually rely on the "Trim/Extend" logic for corners. 
-        // But the user requested splitting at columns.
-        // Let's use Union, but then clamp to Overlap if it's open space?
-        // Safe bet: Use Union, but subtract obstacles.
-        
         const validIntervals = subtractIntervals(tMinUnion, tMaxUnion, mergedBlockers);
         
         const results: DxfEntity[] = [];
@@ -440,7 +460,6 @@ const createPolygonFromPair = (
         }
         
         return results;
-
     } 
     
     return [];

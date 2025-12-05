@@ -13,6 +13,7 @@ import { Layers, Image as ImageIcon, FileText, Settings, X, RefreshCw, Search, P
 import { getStoredConfig, saveStoredConfig } from './utils/configStorage';
 import { getStoredAnalysis } from './utils/analysisStorage';
 import { restoreSplitRegions, restoreMergedViews } from './domains/structure/views';
+import { restoreColumns, restoreWalls } from './domains/structure/verticals';
 
 // Standard CAD Colors (Index 1-7 + Grays + Common)
 const CAD_COLORS = [
@@ -249,6 +250,12 @@ const App: React.FC = () => {
                     }
                     if (savedAnalysis.mergedViewData) {
                         restoreMergedViews(p, savedAnalysis.mergedViewData, setProjects, setLayerColors);
+                    }
+                    if (savedAnalysis.columns) {
+                        restoreColumns(p, savedAnalysis.columns, setProjects, setLayerColors);
+                    }
+                    if (savedAnalysis.walls) {
+                        restoreWalls(p, savedAnalysis.walls, setProjects, setLayerColors);
                     }
                 }
             });
