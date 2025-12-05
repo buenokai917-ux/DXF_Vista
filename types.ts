@@ -91,6 +91,14 @@ export interface ViewportRegion {
     info: { prefix: string, index: number } | null;
 }
 
+export interface ViewMergeMapping {
+    sourceRegionIndex: number;
+    targetRegionIndex: number;
+    vector: Point;
+    bounds: Bounds; // The original bounds of the source region
+    title?: string;
+}
+
 export interface BeamStep2GeoInfo {
     id: string;
     layer: string;
@@ -159,6 +167,11 @@ export interface BeamLabelInfo {
     };
 }
 
+export interface MergedViewData {
+    mappings: ViewMergeMapping[];
+    beamLabels: BeamLabelInfo[];
+}
+
 export interface ProjectFile {
   id: string;
   name: string;
@@ -167,6 +180,7 @@ export interface ProjectFile {
   filledLayers: Set<string>;
   layerConfig: Record<SemanticLayer, string[]>;
   splitRegions: ViewportRegion[] | null;
+  mergedViewData?: MergedViewData;
   beamLabels?: BeamLabelInfo[];
   beamStep2GeoInfos?: BeamStep2GeoInfo[];
   beamStep2InterInfos?: BeamIntersectionInfo[];
