@@ -257,15 +257,8 @@ export const generateMergedViewEntities = (data: MergedViewData): DxfEntity[] =>
          if (processedTargets.has(m.targetRegionIndex)) return;
          processedTargets.add(m.targetRegionIndex);
          
-         const b = m.bounds; // Note: This is Source Bounds.
-         // Wait, we need the Target Bounds relative to the merge.
-         // Actually, if we shifted everything TO the target, the target's bounds are the reference.
-         // BUT, m.vector is Source -> Target.
-         // So Source.Bounds + Vector = Target Location in Merged Space.
-         
-         // For the base view, vector is 0,0.
-         // Let's just draw the bounds of the destination region.
-         // We can reconstruct it:
+         const b = m.bounds; // Source Bounds
+         // Reconstruct Destination Bounds
          const destMinX = b.minX + m.vector.x;
          const destMinY = b.minY + m.vector.y;
          const destMaxX = b.maxX + m.vector.x;
@@ -284,7 +277,6 @@ export const generateMergedViewEntities = (data: MergedViewData): DxfEntity[] =>
          });
 
          // Draw Title
-         // Use the stripped title (m.title) which we cleaned in calculateMergedViewData
          const title = m.title || "Merged View";
          entities.push({
              type: EntityType.TEXT,
@@ -303,7 +295,7 @@ export const generateMergedViewEntities = (data: MergedViewData): DxfEntity[] =>
             layer: lbl.sourceLayer, // MERGE_LABEL_H or V
             text: lbl.textRaw,
             start: lbl.textInsert,
-            radius: 250, // Standard size
+            radius: 250,
             startAngle: lbl.orientation
         });
     });
@@ -331,7 +323,16 @@ export const restoreMergedViews = (
     setLayerColors(prev => ({ ...prev, ...RESULT_COLORS }));
 
     // Update Project
-    updateProject(activeProject, setProjects, setLayerColors, RESULT_LAYER_VIEW, entities, RESULT_COLORS[RESULT_LAYER_VIEW], [RESULT_LAYER_H, RESULT_LAYER_V], false);
+    updateProject(
+        activeProject, 
+        setProjects, 
+        setLayerColors, 
+        RESULT_LAYER_VIEW, 
+        entities, 
+        RESULT_COLORS[RESULT_LAYER_VIEW], 
+        [RESULT_LAYER_H, RESULT_LAYER_V], 
+        false
+    );
 
     setProjects(prev => prev.map(p => {
         if (p.id === activeProject.id) {

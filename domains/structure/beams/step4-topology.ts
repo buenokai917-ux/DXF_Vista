@@ -520,12 +520,6 @@ export const runBeamTopologyMerge = (
         if (!changedAny) break; 
     }
 
-    // --- CLEANUP ---
-    // Remove small fragments (< 500mm)
-    fragments = fragments.filter(f => {
-        return f.obb.halfLen * 2 >= 500;
-    });
-
     // --- OUTPUT GENERATION ---
     const resultEntities: DxfEntity[] = [];
     const labels: DxfEntity[] = [];

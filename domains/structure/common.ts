@@ -30,23 +30,42 @@ export const updateProject = (
     splitRegionsUpdate?: ViewportRegion[],
     layersToHide: string[] = []
 ) => {
+    // 1. Identify all layers impacted by newEntities (Result Layer + any layers in the new entity list)
+    const affectedLayers = new Set<string>();
+    affectedLayers.add(resultLayer);
+    newEntities.forEach(e => affectedLayers.add(e.layer));
+
+    // 2. Remove OLD entities on these layers to prevent duplicates (Replace Mode)
+    // This ensures that re-running analysis cleans up previous runs on these specific layers.
+    const filteredEntities = activeProject.data.entities.filter(e => !affectedLayers.has(e.layer));
+
+    // 3. Register new layers if they don't exist in the project
+    const currentLayersSet = new Set(activeProject.data.layers);
+    affectedLayers.forEach(l => currentLayersSet.add(l));
+    const updatedLayersList = Array.from(currentLayersSet).sort();
+
     const updatedData = {
         ...activeProject.data,
-        entities: [...activeProject.data.entities, ...newEntities],
-        layers: activeProject.data.layers.includes(resultLayer) ? activeProject.data.layers : [resultLayer, ...activeProject.data.layers]
+        entities: [...filteredEntities, ...newEntities],
+        layers: updatedLayersList
     };
 
+    // Update color for the primary result layer
     setLayerColors(prev => ({ ...prev, [resultLayer]: color }));
 
     setProjects(prev => prev.map(p => {
         if (p.id === activeProject.id) {
             const newActive = new Set(p.activeLayers);
-            newActive.add(resultLayer);
+            
+            // Auto-activate all affected layers (e.g., MERGE_VIEW, MERGE_LABEL_H, MERGE_LABEL_V)
+            affectedLayers.forEach(l => newActive.add(l));
+            
+            // Activate explicitly requested context layers
             contextLayers.forEach(l => {
                 if (updatedData.layers.includes(l)) newActive.add(l);
             });
             
-            // Hide requested layers (e.g. previous pipeline steps)
+            // Hide requested layers (e.g., previous pipeline steps)
             layersToHide.forEach(l => newActive.delete(l));
             
             const newFilled = new Set(p.filledLayers);
