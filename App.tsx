@@ -11,9 +11,6 @@ import { renderDxfToCanvas } from './utils/renderUtils';
 import { AnalysisSidebar } from './components/AnalysisSidebar';
 import { Layers, Image as ImageIcon, FileText, Settings, X, RefreshCw, Search, Plus, File as FileIcon, ChevronUp, ChevronDown, Hammer } from 'lucide-react';
 import { getStoredConfig, saveStoredConfig } from './utils/configStorage';
-import { getStoredAnalysis } from './utils/analysisStorage';
-import { restoreSplitRegions, restoreMergedViews } from './domains/structure/views';
-import { restoreColumns, restoreWalls } from './domains/structure/verticals';
 
 // Standard CAD Colors (Index 1-7 + Grays + Common)
 const CAD_COLORS = [
@@ -217,7 +214,7 @@ const App: React.FC = () => {
            const storedConfig = getStoredConfig(file.name);
            const detectedConfig = autoDetectLayers(parsed.layers, usedLayers);
 
-           const project: ProjectFile = {
+           newProjects.push({
              id: Math.random().toString(36).substr(2, 9),
              name: file.name,
              data: parsed,
@@ -225,9 +222,7 @@ const App: React.FC = () => {
              filledLayers: new Set(),
              layerConfig: storedConfig || detectedConfig, // Prefer stored
              splitRegions: null
-           };
-
-           newProjects.push(project);
+           });
         }));
 
         setLayerColors(newColors);
@@ -239,27 +234,6 @@ const App: React.FC = () => {
             }
             return updated;
         });
-        
-        // Post-Load Restoration Effect
-        setTimeout(() => {
-            newProjects.forEach(p => {
-                const savedAnalysis = getStoredAnalysis(p.name);
-                if (savedAnalysis) {
-                    if (savedAnalysis.splitRegions) {
-                        restoreSplitRegions(p, savedAnalysis.splitRegions, setProjects, setLayerColors);
-                    }
-                    if (savedAnalysis.mergedViewData) {
-                        restoreMergedViews(p, savedAnalysis.mergedViewData, setProjects, setLayerColors);
-                    }
-                    if (savedAnalysis.columns) {
-                        restoreColumns(p, savedAnalysis.columns, setProjects, setLayerColors);
-                    }
-                    if (savedAnalysis.walls) {
-                        restoreWalls(p, savedAnalysis.walls, setProjects, setLayerColors);
-                    }
-                }
-            });
-        }, 100);
 
       } catch (err) {
         console.error(err);

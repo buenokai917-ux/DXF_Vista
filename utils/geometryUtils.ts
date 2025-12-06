@@ -2,188 +2,188 @@
 import { DxfEntity, EntityType, Point, Bounds } from '../types';
 
 export const distance = (p1: Point, p2: Point): number => {
-  return Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
+    return Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
 };
 
 export const distancePointToLine = (p: Point, lStart: Point, lEnd: Point): number => {
-  const A = p.x - lStart.x;
-  const B = p.y - lStart.y;
-  const C = lEnd.x - lStart.x;
-  const D = lEnd.y - lStart.y;
+    const A = p.x - lStart.x;
+    const B = p.y - lStart.y;
+    const C = lEnd.x - lStart.x;
+    const D = lEnd.y - lStart.y;
 
-  const dot = A * C + B * D;
-  const lenSq = C * C + D * D;
-  let param = -1;
-  if (lenSq !== 0) param = dot / lenSq;
+    const dot = A * C + B * D;
+    const lenSq = C * C + D * D;
+    let param = -1;
+    if (lenSq !== 0) param = dot / lenSq;
 
-  let xx, yy;
+    let xx, yy;
 
-  if (param < 0) {
-    xx = lStart.x;
-    yy = lStart.y;
-  } else if (param > 1) {
-    xx = lEnd.x;
-    yy = lEnd.y;
-  } else {
-    xx = lStart.x + param * C;
-    yy = lStart.y + param * D;
-  }
+    if (param < 0) {
+        xx = lStart.x;
+        yy = lStart.y;
+    } else if (param > 1) {
+        xx = lEnd.x;
+        yy = lEnd.y;
+    } else {
+        xx = lStart.x + param * C;
+        yy = lStart.y + param * D;
+    }
 
-  const dx = p.x - xx;
-  const dy = p.y - yy;
-  return Math.sqrt(dx * dx + dy * dy);
+    const dx = p.x - xx;
+    const dy = p.y - yy;
+    return Math.sqrt(dx * dx + dy * dy);
 };
 
 // Calculates distance from point p to the infinite line passing through lStart and lEnd
 export const distancePointToInfiniteLine = (p: Point, lStart: Point, lEnd: Point): number => {
-  const A = lStart.y - lEnd.y;
-  const B = lEnd.x - lStart.x;
-  const C = -A * lStart.x - B * lStart.y;
-  
-  const numerator = Math.abs(A * p.x + B * p.y + C);
-  const denominator = Math.sqrt(A * A + B * B);
-  
-  if (denominator === 0) return distance(p, lStart);
-  return numerator / denominator;
+    const A = lStart.y - lEnd.y;
+    const B = lEnd.x - lStart.x;
+    const C = -A * lStart.x - B * lStart.y;
+
+    const numerator = Math.abs(A * p.x + B * p.y + C);
+    const denominator = Math.sqrt(A * A + B * B);
+
+    if (denominator === 0) return distance(p, lStart);
+    return numerator / denominator;
 };
 
 export const getEntityBounds = (entity: DxfEntity): Bounds | null => {
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  const update = (p: Point) => {
-    if (p.x < minX) minX = p.x;
-    if (p.y < minY) minY = p.y;
-    if (p.x > maxX) maxX = p.x;
-    if (p.y > maxY) maxY = p.y;
-  };
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    const update = (p: Point) => {
+        if (p.x < minX) minX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y > maxY) maxY = p.y;
+    };
 
-  if (entity.type === EntityType.LINE && entity.start && entity.end) {
-    update(entity.start);
-    update(entity.end);
-  } else if (entity.type === EntityType.LWPOLYLINE && entity.vertices) {
-    entity.vertices.forEach(update);
-  } else if ((entity.type === EntityType.CIRCLE || entity.type === EntityType.ARC) && entity.center && entity.radius) {
-    update({ x: entity.center.x - entity.radius, y: entity.center.y - entity.radius });
-    update({ x: entity.center.x + entity.radius, y: entity.center.y + entity.radius });
-  } else if ((entity.type === EntityType.TEXT || entity.type === EntityType.INSERT) && entity.start) {
-    // Basic point bounds for text/insert if full geometry not available
-    update(entity.start);
-    // Rough estimate for text bounds if not provided
-    if (entity.type === EntityType.TEXT && entity.text && entity.radius) {
-         // radius acts as height for TEXT
-         const h = entity.radius;
-         const w = entity.text.length * h * 0.6; 
-         // Assume horizontal for bound estimation
-         update({ x: entity.start.x + w, y: entity.start.y + h });
+    if (entity.type === EntityType.LINE && entity.start && entity.end) {
+        update(entity.start);
+        update(entity.end);
+    } else if (entity.type === EntityType.LWPOLYLINE && entity.vertices) {
+        entity.vertices.forEach(update);
+    } else if ((entity.type === EntityType.CIRCLE || entity.type === EntityType.ARC) && entity.center && entity.radius) {
+        update({ x: entity.center.x - entity.radius, y: entity.center.y - entity.radius });
+        update({ x: entity.center.x + entity.radius, y: entity.center.y + entity.radius });
+    } else if ((entity.type === EntityType.TEXT || entity.type === EntityType.INSERT) && entity.start) {
+        // Basic point bounds for text/insert if full geometry not available
+        update(entity.start);
+        // Rough estimate for text bounds if not provided
+        if (entity.type === EntityType.TEXT && entity.text && entity.radius) {
+            // radius acts as height for TEXT
+            const h = entity.radius;
+            const w = entity.text.length * h * 0.6;
+            // Assume horizontal for bound estimation
+            update({ x: entity.start.x + w, y: entity.start.y + h });
+        }
+    } else if (entity.type === EntityType.DIMENSION) {
+        if (entity.measureStart) update(entity.measureStart);
+        if (entity.measureEnd) update(entity.measureEnd);
+        if (entity.end) update(entity.end);
+    } else {
+        return null;
     }
-  } else if (entity.type === EntityType.DIMENSION) {
-      if (entity.measureStart) update(entity.measureStart);
-      if (entity.measureEnd) update(entity.measureEnd);
-      if (entity.end) update(entity.end);
-  } else {
-    return null;
-  }
 
-  if (minX === Infinity) return null;
-  return { minX, minY, maxX, maxY };
+    if (minX === Infinity) return null;
+    return { minX, minY, maxX, maxY };
 };
 
 export const getCenter = (entity: DxfEntity): Point | null => {
-  if (entity.type === EntityType.LINE && entity.start && entity.end) {
-    return {
-      x: (entity.start.x + entity.end.x) / 2,
-      y: (entity.start.y + entity.end.y) / 2
-    };
-  }
-  
-  const bounds = getEntityBounds(entity);
-  if (bounds) {
-    return {
-      x: (bounds.minX + bounds.maxX) / 2,
-      y: (bounds.minY + bounds.maxY) / 2
-    };
-  }
+    if (entity.type === EntityType.LINE && entity.start && entity.end) {
+        return {
+            x: (entity.start.x + entity.end.x) / 2,
+            y: (entity.start.y + entity.end.y) / 2
+        };
+    }
 
-  return entity.center || entity.start || null;
+    const bounds = getEntityBounds(entity);
+    if (bounds) {
+        return {
+            x: (bounds.minX + bounds.maxX) / 2,
+            y: (bounds.minY + bounds.maxY) / 2
+        };
+    }
+
+    return entity.center || entity.start || null;
 };
 
 export const getBeamProperties = (entity: DxfEntity): { length: number, angle: number } => {
-  if (entity.type === EntityType.LWPOLYLINE && entity.vertices && entity.vertices.length > 0) {
-      if (entity.closed) {
-         let maxLen = 0;
-         let angle = 0;
-         const verts = entity.vertices;
-         const count = verts.length;
-         
-         for(let i=0; i<count; i++) {
-             const p1 = verts[i];
-             const p2 = verts[(i+1) % count];
-             const d = distance(p1, p2);
-             if (d > maxLen) {
-                 maxLen = d;
-                 angle = Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180 / Math.PI;
-             }
-         }
-         return { length: maxLen, angle };
-      }
-  }
-  return { length: calculateLength(entity), angle: 0 };
+    if (entity.type === EntityType.LWPOLYLINE && entity.vertices && entity.vertices.length > 0) {
+        if (entity.closed) {
+            let maxLen = 0;
+            let angle = 0;
+            const verts = entity.vertices;
+            const count = verts.length;
+
+            for (let i = 0; i < count; i++) {
+                const p1 = verts[i];
+                const p2 = verts[(i + 1) % count];
+                const d = distance(p1, p2);
+                if (d > maxLen) {
+                    maxLen = d;
+                    angle = Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180 / Math.PI;
+                }
+            }
+            return { length: maxLen, angle };
+        }
+    }
+    return { length: calculateLength(entity), angle: 0 };
 };
 
 export const calculateLength = (entity: DxfEntity): number => {
-  switch (entity.type) {
-    case EntityType.LINE:
-      if (entity.start && entity.end) {
-        return distance(entity.start, entity.end);
-      }
-      return 0;
+    switch (entity.type) {
+        case EntityType.LINE:
+            if (entity.start && entity.end) {
+                return distance(entity.start, entity.end);
+            }
+            return 0;
 
-    case EntityType.LWPOLYLINE:
-      if (entity.vertices && entity.vertices.length > 1) {
-        if (entity.closed) {
-           const props = getBeamProperties(entity);
-           return props.length;
-        }
+        case EntityType.LWPOLYLINE:
+            if (entity.vertices && entity.vertices.length > 1) {
+                if (entity.closed) {
+                    const props = getBeamProperties(entity);
+                    return props.length;
+                }
 
-        let len = 0;
-        for (let i = 0; i < entity.vertices.length - 1; i++) {
-          len += distance(entity.vertices[i], entity.vertices[i + 1]);
-        }
-        return len;
-      }
-      return 0;
+                let len = 0;
+                for (let i = 0; i < entity.vertices.length - 1; i++) {
+                    len += distance(entity.vertices[i], entity.vertices[i + 1]);
+                }
+                return len;
+            }
+            return 0;
 
-    case EntityType.CIRCLE:
-      if (entity.radius) return 2 * Math.PI * entity.radius;
-      return 0;
+        case EntityType.CIRCLE:
+            if (entity.radius) return 2 * Math.PI * entity.radius;
+            return 0;
 
-    case EntityType.ARC:
-      if (entity.radius && entity.startAngle !== undefined && entity.endAngle !== undefined) {
-        let diff = entity.endAngle - entity.startAngle;
-        if (diff < 0) diff += 360;
-        return (diff * Math.PI / 180) * entity.radius;
-      }
-      return 0;
+        case EntityType.ARC:
+            if (entity.radius && entity.startAngle !== undefined && entity.endAngle !== undefined) {
+                let diff = entity.endAngle - entity.startAngle;
+                if (diff < 0) diff += 360;
+                return (diff * Math.PI / 180) * entity.radius;
+            }
+            return 0;
 
-    default:
-      return 0;
-  }
+        default:
+            return 0;
+    }
 };
 
 export const transformPoint = (p: Point, scale: Point, rotationDeg: number, translation: Point): Point => {
-  const sx = p.x * (scale.x || 1);
-  const sy = p.y * (scale.y || 1);
+    const sx = p.x * (scale.x || 1);
+    const sy = p.y * (scale.y || 1);
 
-  const rad = rotationDeg * Math.PI / 180;
-  const cos = Math.cos(rad);
-  const sin = Math.sin(rad);
-  
-  const rx = sx * cos - sy * sin;
-  const ry = sx * sin + sy * cos;
+    const rad = rotationDeg * Math.PI / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
 
-  return {
-    x: rx + translation.x,
-    y: ry + translation.y
-  };
+    const rx = sx * cos - sy * sin;
+    const ry = sx * sin + sy * cos;
+
+    return {
+        x: rx + translation.x,
+        y: ry + translation.y
+    };
 };
 
 export const rayIntersectsBox = (start: Point, dir: Point, box: Bounds): number => {
@@ -211,25 +211,25 @@ export const rayIntersectsBox = (start: Point, dir: Point, box: Bounds): number 
     }
 
     if (tmax < tmin) return Infinity;
-    
+
     // Standard logic: if tmin < 0 (inside), return tmax (exit)
     // This allows walls starting inside other boxes to be registered
     if (tmin < 0) return tmax;
 
-    return tmin; 
+    return tmin;
 };
 
 export const getRayIntersection = (start: Point, dir: Point, obstacles: DxfEntity[]): number => {
     let bestDist = Infinity;
-    
-    const len = Math.sqrt(dir.x*dir.x + dir.y*dir.y);
+
+    const len = Math.sqrt(dir.x * dir.x + dir.y * dir.y);
     if (len === 0) return Infinity;
-    const ndir = { x: dir.x/len, y: dir.y/len };
+    const ndir = { x: dir.x / len, y: dir.y / len };
 
     for (const obs of obstacles) {
         const bounds = getEntityBounds(obs);
         if (!bounds) continue;
-        
+
         const dist = rayIntersectsBox(start, ndir, bounds);
         if (dist !== Infinity && dist < bestDist) {
             bestDist = dist;
@@ -263,7 +263,7 @@ const subtractIntervals = (start: number, end: number, blockers: [number, number
             // Case 1: b is outside r (no overlap) -> keep r
             if (b[1] <= r[0] || b[0] >= r[1]) {
                 nextResult.push(r);
-            } 
+            }
             // Case 2: b covers r completely -> remove r
             else if (b[0] <= r[0] && b[1] >= r[1]) {
                 continue;
@@ -291,38 +291,38 @@ const subtractIntervals = (start: number, end: number, blockers: [number, number
 const hasAxisBetween = (l1: DxfEntity, l2: DxfEntity, axisLines: DxfEntity[], gap: number): boolean => {
     if (!l1.start || !l1.end || axisLines.length === 0) return false;
 
-    const mid1 = { x: (l1.start.x + l1.end.x)/2, y: (l1.start.y + l1.end.y)/2 };
-    
+    const mid1 = { x: (l1.start.x + l1.end.x) / 2, y: (l1.start.y + l1.end.y) / 2 };
+
     const v1 = { x: l1.end.x - l1.start.x, y: l1.end.y - l1.start.y };
-    const len1 = Math.sqrt(v1.x*v1.x + v1.y*v1.y);
+    const len1 = Math.sqrt(v1.x * v1.x + v1.y * v1.y);
     if (len1 === 0) return false;
-    const u1 = { x: v1.x/len1, y: v1.y/len1 };
+    const u1 = { x: v1.x / len1, y: v1.y / len1 };
 
     const tolerance = 200; // Relaxed tolerance for offset/near checks
 
     for (const axis of axisLines) {
         if (!axis.start || !axis.end) continue;
-        
+
         const vA = { x: axis.end.x - axis.start.x, y: axis.end.y - axis.start.y };
-        const lenA = Math.sqrt(vA.x*vA.x + vA.y*vA.y);
+        const lenA = Math.sqrt(vA.x * vA.x + vA.y * vA.y);
         if (lenA === 0) continue;
 
         const dot = (v1.x * vA.x + v1.y * vA.y) / (len1 * lenA);
         if (Math.abs(dot) < 0.98) continue; // Must be parallel
 
         const lateralDist = distancePointToInfiniteLine(mid1, axis.start, axis.end);
-        
+
         if (lateralDist > gap + tolerance) continue;
 
         const tAs = ((axis.start.x - l1.start.x) * u1.x + (axis.start.y - l1.start.y) * u1.y);
         const tAe = ((axis.end.x - l1.start.x) * u1.x + (axis.end.y - l1.start.y) * u1.y);
-        
+
         const minA = Math.min(tAs, tAe);
         const maxA = Math.max(tAs, tAe);
-        
+
         const overlapStart = Math.max(0, minA);
         const overlapEnd = Math.min(len1, maxA);
-        
+
         if (overlapEnd - overlapStart > 50) {
             return true;
         }
@@ -330,10 +330,10 @@ const hasAxisBetween = (l1: DxfEntity, l2: DxfEntity, axisLines: DxfEntity[], ga
     return false;
 };
 
-export const createPolygonFromPair = (
-    l1: DxfEntity, 
-    l2: DxfEntity, 
-    layer: string, 
+const createPolygonFromPair = (
+    l1: DxfEntity,
+    l2: DxfEntity,
+    layer: string,
     obstacles: DxfEntity[],
     mode: 'BEAM' | 'WALL',
     gap: number
@@ -341,9 +341,9 @@ export const createPolygonFromPair = (
     if (!l1.start || !l1.end || !l2.start || !l2.end) return [];
 
     const v1 = { x: l1.end.x - l1.start.x, y: l1.end.y - l1.start.y };
-    const len1 = Math.sqrt(v1.x*v1.x + v1.y*v1.y);
+    const len1 = Math.sqrt(v1.x * v1.x + v1.y * v1.y);
     if (len1 === 0) return [];
-    const u = { x: v1.x/len1, y: v1.y/len1 };
+    const u = { x: v1.x / len1, y: v1.y / len1 };
 
     const getT = (p: Point) => (p.x - l1.start!.x) * u.x + (p.y - l1.start!.y) * u.y;
 
@@ -354,6 +354,7 @@ export const createPolygonFromPair = (
 
     const tMinOverlap = Math.max(Math.min(tA1, tA2), Math.min(tB1, tB2));
     const tMaxOverlap = Math.min(Math.max(tA1, tA2), Math.max(tB1, tB2));
+
     const tMinUnion = Math.min(Math.min(tA1, tA2), Math.min(tB1, tB2));
     const tMaxUnion = Math.max(Math.max(tA1, tA2), Math.max(tB1, tB2));
 
@@ -362,95 +363,119 @@ export const createPolygonFromPair = (
     const projL2Start = { x: l1.start.x + u.x * tB1, y: l1.start.y + u.y * tB1 };
     const vPerp = { x: l2.start.x - projL2Start.x, y: l2.start.y - projL2Start.y };
 
-    // UPDATED: Use Center-Line Scanline logic for obstacle detection.
-    // This allows beams to exist inside the empty part of concave (e.g. C-shaped) walls
-    // and prevents grazing walls from deleting the beam.
+    // UPDATED: Use Precise Boolean Subtraction logic (Interval Clipping)
+    // Beams should only be cut by obstacles that strictly intersect the beam's geometric area.
+    // This avoids "Bounding Box Shadows" which cause issues with T/L shaped columns.
+
     if (mode === 'BEAM' || mode === 'WALL') {
         const blockers: [number, number][] = [];
-        
-        // Scan line at the center of the beam (v = gap / 2)
-        const scanY = gap / 2;
-        const unitVx = vPerp.x / gap;
-        const unitVy = vPerp.y / gap;
+
+        // Prepare basis vectors for the beam's local space
+        // Origin: l1.start
+        // U-Axis: u
+        // V-Axis: normalized vPerp
+        const vLen = Math.sqrt(vPerp.x * vPerp.x + vPerp.y * vPerp.y);
+        const vUnit = { x: vPerp.x / vLen, y: vPerp.y / vLen };
+        // The beam occupies V-range: [0, vLen] (approx, assuming simple parallel)
+        const beamVMin = -1; // Tolerance
+        const beamVMax = vLen + 1; // Tolerance
 
         for (const obs of obstacles) {
-             let polyVerts: Point[] = [];
-             
-             if (obs.type === EntityType.LWPOLYLINE && obs.vertices && obs.vertices.length > 2) {
-                 polyVerts = obs.vertices;
-             } 
-             else if (obs.type === EntityType.CIRCLE && obs.center && obs.radius) {
-                 // Analytical Circle Intersection
-                 const dx = obs.center.x - l1.start!.x;
-                 const dy = obs.center.y - l1.start!.y;
-                 const localC_U = dx * u.x + dy * u.y;
-                 const localC_V = dx * unitVx + dy * unitVy;
-                 
-                 const dist = Math.abs(localC_V - scanY);
-                 if (dist < obs.radius) {
-                     const chordHalf = Math.sqrt(obs.radius * obs.radius - dist * dist);
-                     blockers.push([localC_U - chordHalf, localC_U + chordHalf]);
-                 }
-                 continue;
-             }
-             else {
-                 // Skip unsupported shapes (lines, open polys) to avoid false positives
-                 continue;
-             }
+            let vertices: Point[] = [];
 
-             // Transform vertices to local (u, v) space
-             const localVerts = polyVerts.map(p => {
-                 const dx = p.x - l1.start!.x;
-                 const dy = p.y - l1.start!.y;
-                 return {
-                     u: dx * u.x + dy * u.y,
-                     v: dx * unitVx + dy * unitVy
-                 };
-             });
+            // Extract vertices from obstacle
+            if (obs.type === EntityType.LWPOLYLINE && obs.vertices) {
+                vertices = obs.vertices;
+            } else if (obs.type === EntityType.CIRCLE && obs.center && obs.radius) {
+                // Approximate circle
+                const segments = 12;
+                for (let i = 0; i < segments; i++) {
+                    const ang = (i / segments) * 2 * Math.PI;
+                    vertices.push({
+                        x: obs.center.x + Math.cos(ang) * obs.radius,
+                        y: obs.center.y + Math.sin(ang) * obs.radius
+                    });
+                }
+            } else {
+                // Fallback to bounding box corners for other types
+                const b = getEntityBounds(obs);
+                if (b) vertices = [{ x: b.minX, y: b.minY }, { x: b.maxX, y: b.minY }, { x: b.maxX, y: b.maxY }, { x: b.minX, y: b.maxY }];
+            }
 
-             const nodes: number[] = [];
-             const numV = localVerts.length;
-             for (let i = 0; i < numV; i++) {
-                 const p1 = localVerts[i];
-                 const p2 = localVerts[(i + 1) % numV]; // Implicit close
+            if (vertices.length < 3) continue;
 
-                 // Check if edge crosses the scan line
-                 if ((p1.v < scanY && p2.v >= scanY) || (p1.v >= scanY && p2.v < scanY)) {
-                     const t = (scanY - p1.v) / (p2.v - p1.v);
-                     const interU = p1.u + t * (p2.u - p1.u);
-                     nodes.push(interU);
-                 }
-             }
-             
-             nodes.sort((a, b) => a - b);
-             
-             // Create intervals using Even-Odd rule (inside polygon)
-             for (let k = 0; k < nodes.length; k += 2) {
-                 if (k + 1 < nodes.length) {
-                     blockers.push([nodes[k], nodes[k+1]]);
-                 }
-             }
+            // Transform vertices to Beam Local Space (u, v)
+            const localVerts = vertices.map(v => {
+                const rx = v.x - l1.start!.x;
+                const ry = v.y - l1.start!.y;
+                return {
+                    u: rx * u.x + ry * u.y,
+                    v: rx * vUnit.x + ry * vUnit.y
+                };
+            });
+
+            // Determine the U-range where the obstacle overlaps the V-strip
+            let obsMinU = Infinity;
+            let obsMaxU = -Infinity;
+            let hasOverlap = false;
+
+            // 1. Check vertices inside the strip
+            localVerts.forEach(lv => {
+                if (lv.v >= beamVMin && lv.v <= beamVMax) {
+                    hasOverlap = true;
+                    obsMinU = Math.min(obsMinU, lv.u);
+                    obsMaxU = Math.max(obsMaxU, lv.u);
+                }
+            });
+
+            // 2. Check edges crossing the strip boundaries (v=0 and v=gap)
+            // This handles cases where obstacle spans across the whole beam width without having a vertex inside
+            const numV = localVerts.length;
+            for (let i = 0; i < numV; i++) {
+                const p1 = localVerts[i];
+                const p2 = localVerts[(i + 1) % numV];
+
+                const checkCrossing = (targetV: number) => {
+                    if ((p1.v < targetV && p2.v >= targetV) || (p1.v >= targetV && p2.v < targetV)) {
+                        // Linear interpolation to find U at targetV
+                        const t = (targetV - p1.v) / (p2.v - p1.v);
+                        const intersectU = p1.u + t * (p2.u - p1.u);
+                        hasOverlap = true;
+                        obsMinU = Math.min(obsMinU, intersectU);
+                        obsMaxU = Math.max(obsMaxU, intersectU);
+                    }
+                };
+
+                checkCrossing(0); // Intersection with one side of beam
+                checkCrossing(vLen); // Intersection with other side of beam
+            }
+
+            if (hasOverlap && obsMaxU > obsMinU) {
+                blockers.push([obsMinU, obsMaxU]);
+            }
         }
-        
+
         const mergedBlockers = mergeIntervals(blockers);
+        // Beams typically run between columns, so Union is a safer default range than Overlap for generation,
+        // but we subtract obstacles.
         const validIntervals = subtractIntervals(tMinUnion, tMaxUnion, mergedBlockers);
-        
+
         const results: DxfEntity[] = [];
-        
+
         for (const interval of validIntervals) {
             const startT = interval[0];
             const endT = interval[1];
-            
-            if (endT - startT < 200) continue; 
-            
+
+            if (endT - startT < 200) continue;
+
             const pStartBase = { x: l1.start.x + u.x * startT, y: l1.start.y + u.y * startT };
             const pEndBase = { x: l1.start.x + u.x * endT, y: l1.start.y + u.y * endT };
-            
+
             const c1 = pStartBase;
             const c2 = pEndBase;
             const c3 = { x: c2.x + vPerp.x, y: c2.y + vPerp.y };
             const c4 = { x: c1.x + vPerp.x, y: c1.y + vPerp.y };
-            
+
             results.push({
                 type: EntityType.LWPOLYLINE,
                 layer: layer,
@@ -458,229 +483,229 @@ export const createPolygonFromPair = (
                 closed: true
             });
         }
-        
+
         return results;
-    } 
-    
+    }
+
     return [];
 };
 
 export const findParallelPolygons = (
-    lines: DxfEntity[], 
-    tolerance = 1200, 
-    resultLayer = 'CALC_LAYER', 
+    lines: DxfEntity[],
+    tolerance = 1200,
+    resultLayer = 'CALC_LAYER',
     obstacles: DxfEntity[] = [],
     axisLines: DxfEntity[] = [],
     textEntities: DxfEntity[] = [],
     mode: 'BEAM' | 'WALL' = 'BEAM',
     validWidths: Set<number> = new Set()
 ): DxfEntity[] => {
-  const polygons: DxfEntity[] = [];
-  const used = new Set<number>(); 
+    const polygons: DxfEntity[] = [];
+    const used = new Set<number>();
 
-  const sortedLines = lines.map((l, i) => ({ l, i, len: calculateLength(l) })).sort((a, b) => b.len - a.len);
-  
-  // Sort valid widths from small to large (for consistent matching preference)
-  const sortedWidths = Array.from(validWidths).sort((a, b) => a - b);
+    const sortedLines = lines.map((l, i) => ({ l, i, len: calculateLength(l) })).sort((a, b) => b.len - a.len);
 
-  for (let idxA = 0; idxA < sortedLines.length; idxA++) {
-    const { l: l1, i: i, len: len1 } = sortedLines[idxA];
-    if (used.has(i)) continue;
-    if (l1.type !== EntityType.LINE || !l1.start || !l1.end) continue;
-    if (len1 < 50) continue;
+    // Sort valid widths from small to large (for consistent matching preference)
+    const sortedWidths = Array.from(validWidths).sort((a, b) => a - b);
 
-    const v1 = { x: l1.end.x - l1.start.x, y: l1.end.y - l1.start.y };
-    
-    for (let idxB = idxA + 1; idxB < sortedLines.length; idxB++) {
-       const { l: l2, i: j, len: len2 } = sortedLines[idxB];
-       if (used.has(j)) continue;
-       if (l2.type !== EntityType.LINE || !l2.start || !l2.end) continue;
+    for (let idxA = 0; idxA < sortedLines.length; idxA++) {
+        const { l: l1, i: i, len: len1 } = sortedLines[idxA];
+        if (used.has(i)) continue;
+        if (l1.type !== EntityType.LINE || !l1.start || !l1.end) continue;
+        if (len1 < 50) continue;
 
-       if (Math.min(len1, len2) < 200) continue; 
+        const v1 = { x: l1.end.x - l1.start.x, y: l1.end.y - l1.start.y };
 
-       const v2 = { x: l2.end.x - l2.start.x, y: l2.end.y - l2.start.y };
-       const dot = (v1.x * v2.x + v1.y * v2.y) / (len1 * len2);
-       if (Math.abs(dot) < 0.95) continue; 
+        for (let idxB = idxA + 1; idxB < sortedLines.length; idxB++) {
+            const { l: l2, i: j, len: len2 } = sortedLines[idxB];
+            if (used.has(j)) continue;
+            if (l2.type !== EntityType.LINE || !l2.start || !l2.end) continue;
 
-       const l2Center = { x: (l2.start.x + l2.end.x)/2, y: (l2.start.y + l2.end.y)/2 };
-       const dist = distancePointToLine(l2Center, l1.start, l1.end);
+            if (Math.min(len1, len2) < 200) continue;
 
-       if (dist > tolerance || dist < 10) continue; 
+            const v2 = { x: l2.end.x - l2.start.x, y: l2.end.y - l2.start.y };
+            const dot = (v1.x * v2.x + v1.y * v2.y) / (len1 * len2);
+            if (Math.abs(dot) < 0.95) continue;
 
-       const u = { x: v1.x/len1, y: v1.y/len1 };
-       const getT = (p: Point) => (p.x - l1.start!.x) * u.x + (p.y - l1.start!.y) * u.y;
-       
-       const tB1 = getT(l2.start);
-       const tB2 = getT(l2.end);
-       const tMinB = Math.min(tB1, tB2);
-       const tMaxB = Math.max(tB1, tB2);
-       
-       const overlapMin = Math.max(0, tMinB);
-       const overlapMax = Math.min(len1, tMaxB);
-       const overlapLen = overlapMax - overlapMin;
+            const l2Center = { x: (l2.start.x + l2.end.x) / 2, y: (l2.start.y + l2.end.y) / 2 };
+            const dist = distancePointToLine(l2Center, l1.start, l1.end);
 
-       if (overlapLen < 50) continue; 
+            if (dist > tolerance || dist < 10) continue;
 
-       let isValid = false; 
-       const gap = dist;
+            const u = { x: v1.x / len1, y: v1.y / len1 };
+            const getT = (p: Point) => (p.x - l1.start!.x) * u.x + (p.y - l1.start!.y) * u.y;
 
-       if (mode === 'WALL') {
-             // For walls, we strictly respect validWidths if they exist (auto-detected)
-             if (validWidths.size > 0) {
-                 for (const w of validWidths) {
-                     if (Math.abs(gap - w) <= 10) { // Tolerance 10mm
-                         isValid = true;
-                         break;
-                     }
-                 }
-             } else {
-                 if (gap >= 100 && gap <= 500) isValid = true;
-             }
+            const tB1 = getT(l2.start);
+            const tB2 = getT(l2.end);
+            const tMinB = Math.min(tB1, tB2);
+            const tMaxB = Math.max(tB1, tB2);
 
-             if (isValid) {
-                 const axisFound = hasAxisBetween(l1, l2, axisLines, gap);
-                 if (!axisFound) isValid = false;
-             }
-       } else {
-             // Beam Mode: STRICT WIDTH CHECKING
-             if (sortedWidths.length > 0) {
-                 for (const w of sortedWidths) {
-                     if (Math.abs(gap - w) <= 15) { // 15mm tolerance for construction deviations
-                         isValid = true;
-                         
-                         // Axis check logic:
-                         // User requirement: "If axis exists, it must be paired... If no axis, skip check."
-                         // This implies that finding a width match is sufficient, but finding an axis confirms it stronger.
-                         // Since we are already inside a width match block, we can proceed.
-                         // (Note: We don't discard if NO axis is found, because valid width is the primary key).
-                         
-                         // Optional optimization: If an axis is found, break immediately and accept.
-                         // But we already set isValid=true based on width, so we are good.
-                         break;
-                     }
-                 }
-             } else {
-                 // Fallback only if no text annotations found (should be rare)
-                 if (gap >= 200 && gap <= 1200) isValid = true;
-             }
-       }
+            const overlapMin = Math.max(0, tMinB);
+            const overlapMax = Math.min(len1, tMaxB);
+            const overlapLen = overlapMax - overlapMin;
 
-       if (isValid) {
-            const resultEntities = createPolygonFromPair(l1, l2, resultLayer, obstacles, mode, gap);
-            if (resultEntities.length > 0) {
-                polygons.push(...resultEntities);
-                used.add(j); 
+            if (overlapLen < 50) continue;
+
+            let isValid = false;
+            const gap = dist;
+
+            if (mode === 'WALL') {
+                // For walls, we strictly respect validWidths if they exist (auto-detected)
+                if (validWidths.size > 0) {
+                    for (const w of validWidths) {
+                        if (Math.abs(gap - w) <= 10) { // Tolerance 10mm
+                            isValid = true;
+                            break;
+                        }
+                    }
+                } else {
+                    if (gap >= 100 && gap <= 500) isValid = true;
+                }
+
+                if (isValid) {
+                    const axisFound = hasAxisBetween(l1, l2, axisLines, gap);
+                    if (!axisFound) isValid = false;
+                }
+            } else {
+                // Beam Mode: STRICT WIDTH CHECKING
+                if (sortedWidths.length > 0) {
+                    for (const w of sortedWidths) {
+                        if (Math.abs(gap - w) <= 15) { // 15mm tolerance for construction deviations
+                            isValid = true;
+
+                            // Axis check logic:
+                            // User requirement: "If axis exists, it must be paired... If no axis, skip check."
+                            // This implies that finding a width match is sufficient, but finding an axis confirms it stronger.
+                            // Since we are already inside a width match block, we can proceed.
+                            // (Note: We don't discard if NO axis is found, because valid width is the primary key).
+
+                            // Optional optimization: If an axis is found, break immediately and accept.
+                            // But we already set isValid=true based on width, so we are good.
+                            break;
+                        }
+                    }
+                } else {
+                    // Fallback only if no text annotations found (should be rare)
+                    if (gap >= 200 && gap <= 1200) isValid = true;
+                }
             }
-       }
+
+            if (isValid) {
+                const resultEntities = createPolygonFromPair(l1, l2, resultLayer, obstacles, mode, gap);
+                if (resultEntities.length > 0) {
+                    polygons.push(...resultEntities);
+                    used.add(j);
+                }
+            }
+        }
+        used.add(i);
     }
-    used.add(i);
-  }
-  return polygons;
+    return polygons;
 };
 
 export const calculateTotalBounds = (
-    entities: DxfEntity[], 
-    blocks: Record<string, DxfEntity[]>, 
+    entities: DxfEntity[],
+    blocks: Record<string, DxfEntity[]>,
     activeLayers: Set<string> | null = null
 ): Bounds => {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     let hasEntities = false;
 
     const checkPoint = (x: number, y: number) => {
-      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-      hasEntities = true;
-      if (x < minX) minX = x;
-      if (y < minY) minY = y;
-      if (x > maxX) maxX = x;
-      if (y > maxY) maxY = y;
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+        hasEntities = true;
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
     };
 
     const processEntity = (ent: DxfEntity, offsetX = 0, offsetY = 0, scaleX = 1, scaleY = 1, rotation = 0) => {
-       const isLayerActive = !activeLayers || activeLayers.has(ent.layer);
-       if (!isLayerActive && ent.type !== EntityType.INSERT) return;
+        const isLayerActive = !activeLayers || activeLayers.has(ent.layer);
+        if (!isLayerActive && ent.type !== EntityType.INSERT) return;
 
-       const transformAndCheck = (localX: number, localY: number) => {
-          let tx = localX * scaleX;
-          let ty = localY * scaleY;
-          if (rotation !== 0) {
-              const rad = rotation * Math.PI / 180;
-              const rx = tx * Math.cos(rad) - ty * Math.sin(rad);
-              const ry = tx * Math.sin(rad) + ty * Math.cos(rad);
-              tx = rx;
-              ty = ry;
-          }
-          checkPoint(tx + offsetX, ty + offsetY);
-       };
+        const transformAndCheck = (localX: number, localY: number) => {
+            let tx = localX * scaleX;
+            let ty = localY * scaleY;
+            if (rotation !== 0) {
+                const rad = rotation * Math.PI / 180;
+                const rx = tx * Math.cos(rad) - ty * Math.sin(rad);
+                const ry = tx * Math.sin(rad) + ty * Math.cos(rad);
+                tx = rx;
+                ty = ry;
+            }
+            checkPoint(tx + offsetX, ty + offsetY);
+        };
 
-       if (isLayerActive) {
-           if (ent.type === EntityType.LINE && ent.start && ent.end) {
-             transformAndCheck(ent.start.x, ent.start.y);
-             transformAndCheck(ent.end.x, ent.end.y);
-           } else if (ent.type === EntityType.LWPOLYLINE && ent.vertices) {
-             ent.vertices.forEach(v => transformAndCheck(v.x, v.y));
-           } else if ((ent.type === EntityType.CIRCLE || ent.type === EntityType.ARC) && ent.center && ent.radius) {
-             transformAndCheck(ent.center.x - ent.radius, ent.center.y - ent.radius);
-             transformAndCheck(ent.center.x + ent.radius, ent.center.y + ent.radius);
-           } else if ((ent.type === EntityType.TEXT || ent.type === EntityType.ATTRIB) && ent.start) {
-             transformAndCheck(ent.start.x, ent.start.y);
-           } else if (ent.type === EntityType.DIMENSION) {
-              if (ent.measureStart) transformAndCheck(ent.measureStart.x, ent.measureStart.y);
-              if (ent.measureEnd) transformAndCheck(ent.measureEnd.x, ent.measureEnd.y);
-              if (ent.end) transformAndCheck(ent.end.x, ent.end.y); 
-           }
-       }
-       
-       if (ent.type === EntityType.INSERT && ent.start && ent.blockName && blocks[ent.blockName]) {
-          const subEntities = blocks[ent.blockName];
-          let insLocalX = ent.start.x * scaleX;
-          let insLocalY = ent.start.y * scaleY;
-          if (rotation !== 0) {
-             const r = rotation * Math.PI / 180;
-             const tx = insLocalX * Math.cos(r) - insLocalY * Math.sin(r);
-             const ty = insLocalX * Math.sin(r) + insLocalY * Math.cos(r);
-             insLocalX = tx;
-             insLocalY = ty;
-          }
-          const nextOffsetX = offsetX + insLocalX;
-          const nextOffsetY = offsetY + insLocalY;
-          const nextScaleX = scaleX * (ent.scale?.x || 1);
-          const nextScaleY = scaleY * (ent.scale?.y || 1);
-          const nextRotation = rotation + (ent.rotation || 0);
+        if (isLayerActive) {
+            if (ent.type === EntityType.LINE && ent.start && ent.end) {
+                transformAndCheck(ent.start.x, ent.start.y);
+                transformAndCheck(ent.end.x, ent.end.y);
+            } else if (ent.type === EntityType.LWPOLYLINE && ent.vertices) {
+                ent.vertices.forEach(v => transformAndCheck(v.x, v.y));
+            } else if ((ent.type === EntityType.CIRCLE || ent.type === EntityType.ARC) && ent.center && ent.radius) {
+                transformAndCheck(ent.center.x - ent.radius, ent.center.y - ent.radius);
+                transformAndCheck(ent.center.x + ent.radius, ent.center.y + ent.radius);
+            } else if ((ent.type === EntityType.TEXT || ent.type === EntityType.ATTRIB) && ent.start) {
+                transformAndCheck(ent.start.x, ent.start.y);
+            } else if (ent.type === EntityType.DIMENSION) {
+                if (ent.measureStart) transformAndCheck(ent.measureStart.x, ent.measureStart.y);
+                if (ent.measureEnd) transformAndCheck(ent.measureEnd.x, ent.measureEnd.y);
+                if (ent.end) transformAndCheck(ent.end.x, ent.end.y);
+            }
+        }
 
-          const rows = ent.rowCount || 1;
-          const cols = ent.columnCount || 1;
-          const rSpace = ent.rowSpacing || 0;
-          const cSpace = ent.columnSpacing || 0;
+        if (ent.type === EntityType.INSERT && ent.start && ent.blockName && blocks[ent.blockName]) {
+            const subEntities = blocks[ent.blockName];
+            let insLocalX = ent.start.x * scaleX;
+            let insLocalY = ent.start.y * scaleY;
+            if (rotation !== 0) {
+                const r = rotation * Math.PI / 180;
+                const tx = insLocalX * Math.cos(r) - insLocalY * Math.sin(r);
+                const ty = insLocalX * Math.sin(r) + insLocalY * Math.cos(r);
+                insLocalX = tx;
+                insLocalY = ty;
+            }
+            const nextOffsetX = offsetX + insLocalX;
+            const nextOffsetY = offsetY + insLocalY;
+            const nextScaleX = scaleX * (ent.scale?.x || 1);
+            const nextScaleY = scaleY * (ent.scale?.y || 1);
+            const nextRotation = rotation + (ent.rotation || 0);
 
-          if (rows === 1 && cols === 1) {
-              subEntities.forEach(sub => {
-                  processEntity(sub, nextOffsetX, nextOffsetY, nextScaleX, nextScaleY, nextRotation);
-              });
-          } else {
-              for (let r = 0; r < rows; r++) {
-                  for (let c = 0; c < cols; c++) {
-                      let gridX = c * cSpace;
-                      let gridY = r * rSpace;
-                      let rGridX = gridX * scaleX; 
-                      let rGridY = gridY * scaleY;
+            const rows = ent.rowCount || 1;
+            const cols = ent.columnCount || 1;
+            const rSpace = ent.rowSpacing || 0;
+            const cSpace = ent.columnSpacing || 0;
 
-                      if (ent.rotation) {
-                          const rad = ent.rotation * Math.PI / 180;
-                          const tx = rGridX * Math.cos(rad) - rGridY * Math.sin(rad);
-                          const ty = rGridX * Math.sin(rad) + rGridY * Math.cos(rad);
-                          rGridX = tx;
-                          rGridY = ty;
-                      }
-                      const finalOffsetX = nextOffsetX + rGridX;
-                      const finalOffsetY = nextOffsetY + rGridY;
+            if (rows === 1 && cols === 1) {
+                subEntities.forEach(sub => {
+                    processEntity(sub, nextOffsetX, nextOffsetY, nextScaleX, nextScaleY, nextRotation);
+                });
+            } else {
+                for (let r = 0; r < rows; r++) {
+                    for (let c = 0; c < cols; c++) {
+                        let gridX = c * cSpace;
+                        let gridY = r * rSpace;
+                        let rGridX = gridX * scaleX;
+                        let rGridY = gridY * scaleY;
 
-                      subEntities.forEach(sub => {
-                          processEntity(sub, finalOffsetX, finalOffsetY, nextScaleX, nextScaleY, nextRotation);
-                      });
-                  }
-              }
-          }
-       }
+                        if (ent.rotation) {
+                            const rad = ent.rotation * Math.PI / 180;
+                            const tx = rGridX * Math.cos(rad) - rGridY * Math.sin(rad);
+                            const ty = rGridX * Math.sin(rad) + rGridY * Math.cos(rad);
+                            rGridX = tx;
+                            rGridY = ty;
+                        }
+                        const finalOffsetX = nextOffsetX + rGridX;
+                        const finalOffsetY = nextOffsetY + rGridY;
+
+                        subEntities.forEach(sub => {
+                            processEntity(sub, finalOffsetX, finalOffsetY, nextScaleX, nextScaleY, nextRotation);
+                        });
+                    }
+                }
+            }
+        }
     };
 
     entities.forEach(ent => processEntity(ent));
@@ -713,7 +738,7 @@ export const groupEntitiesByProximity = (entities: DxfEntity[], tolerance = 5000
         for (let i = 0; i < clusters.length; i++) {
             if (merged.has(i)) continue;
             let current = clusters[i];
-            
+
             for (let j = i + 1; j < clusters.length; j++) {
                 if (merged.has(j)) continue;
                 const other = clusters[j];
@@ -746,48 +771,48 @@ export const groupEntitiesByProximity = (entities: DxfEntity[], tolerance = 5000
 };
 
 export const findTitleForBounds = (
-    box: Bounds, 
-    texts: DxfEntity[], 
-    lines: DxfEntity[], 
+    box: Bounds,
+    texts: DxfEntity[],
+    lines: DxfEntity[],
     layerFilter: string = '',
-    maxMargin = 25000 
+    maxMargin = 25000
 ): { title: string | null, scannedBounds: Bounds[] } => {
     // Search in expanding rings to find the *nearest* title
     const step = 500; // Step size in CAD units (mm)
     const scannedBounds: Bounds[] = [];
-    
+
     // Start from the first expanded ring (skip margin 0 to avoid searching inside the original box)
     for (let currentMargin = step; currentMargin <= maxMargin; currentMargin += step) {
 
         const innerMargin = Math.max(0, currentMargin - step);
-        
+
         const outerBox = {
             minX: box.minX - currentMargin,
             minY: box.minY - currentMargin,
             maxX: box.maxX + currentMargin,
             maxY: box.maxY + currentMargin
         };
-        
+
         const innerBox = {
-             minX: box.minX - innerMargin,
-             minY: box.minY - innerMargin,
-             maxX: box.maxX + innerMargin,
-             maxY: box.maxY + innerMargin
+            minX: box.minX - innerMargin,
+            minY: box.minY - innerMargin,
+            maxX: box.maxX + innerMargin,
+            maxY: box.maxY + innerMargin
         };
 
         scannedBounds.push(outerBox);
 
         const candidates = texts.filter(t => {
             if (!t.start || !t.text) return false;
-            
+
             // Check if inside outer ring
             if (t.start.x < outerBox.minX || t.start.x > outerBox.maxX ||
                 t.start.y < outerBox.minY || t.start.y > outerBox.maxY) return false;
 
             // Check if outside inner ring (optimization to check only new area)
             if (currentMargin > 0) {
-                 if (t.start.x >= innerBox.minX && t.start.x <= innerBox.maxX &&
-                     t.start.y >= innerBox.minY && t.start.y <= innerBox.maxY) return false;
+                if (t.start.x >= innerBox.minX && t.start.x <= innerBox.maxX &&
+                    t.start.y >= innerBox.minY && t.start.y <= innerBox.maxY) return false;
             }
 
             // Exclude unwanted layers (Standard practice: Grid IDs and Dimensions are not titles)
@@ -806,7 +831,7 @@ export const findTitleForBounds = (
         const validTitles: DxfEntity[] = [];
 
         for (const txt of candidates) {
-            const h = txt.radius || 300; 
+            const h = txt.radius || 300;
             const w = (txt.text!.length) * h * 0.7;
             const txtBounds = {
                 minX: txt.start!.x,
@@ -819,16 +844,16 @@ export const findTitleForBounds = (
             const hasUnderline = lines.some(l => {
                 const checkSegment = (p1: Point, p2: Point) => {
                     if (Math.abs(p1.y - p2.y) > h * 0.5) return false; // Not horizontal
-                    
+
                     const lineY = (p1.y + p2.y) / 2;
                     const verticalGap = txtBounds.minY - lineY; // Distance from Text Bottom to Line
-                    
+
                     // Relaxed Check: Allow line to slightly touch text (-0.2h) or be up to 0.6h below
                     if (verticalGap < -h * 0.2 || verticalGap > h * 0.6) return false;
 
                     const lineMinX = Math.min(p1.x, p2.x);
                     const lineMaxX = Math.max(p1.x, p2.x);
-                    
+
                     const overlap = Math.min(lineMaxX, txtBounds.maxX) - Math.max(lineMinX, txtBounds.minX);
                     return overlap > w * 0.3;
                 };
@@ -837,7 +862,7 @@ export const findTitleForBounds = (
                     return checkSegment(l.start, l.end);
                 } else if (l.type === EntityType.LWPOLYLINE && l.vertices && l.vertices.length > 1) {
                     for (let i = 0; i < l.vertices.length - 1; i++) {
-                        if (checkSegment(l.vertices[i], l.vertices[i+1])) return true;
+                        if (checkSegment(l.vertices[i], l.vertices[i + 1])) return true;
                     }
                 }
                 return false;
@@ -862,7 +887,7 @@ export const findTitleForBounds = (
 // --- MERGE VIEW HELPERS ---
 
 const CHINESE_NUMS: Record<string, number> = {
-    '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, 
+    '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
     '六': 6, '七': 7, '八': 8, '九': 9, '十': 10
 };
 
@@ -879,14 +904,14 @@ export const parseViewportTitle = (title: string): { prefix: string, index: numb
         const numStr = matchCN[2];
         let val = CHINESE_NUMS[numStr];
         // Simple handling for '十一' etc if needed, but basic 1-10 covers most
-        if (!val) val = 0; 
+        if (!val) val = 0;
         return { prefix: matchCN[1].trim(), index: val };
     }
 
     // 3. Check -1, -2...
     const matchDash = title.match(/^(.*)-(\d+)$/);
     if (matchDash) {
-         return { prefix: matchDash[1].trim(), index: parseInt(matchDash[2], 10) };
+        return { prefix: matchDash[1].trim(), index: parseInt(matchDash[2], 10) };
     }
 
     return null;
@@ -899,7 +924,7 @@ export const getGridIntersections = (box: Bounds, axisLines: DxfEntity[]): Point
 
     axisLines.forEach(l => {
         if (l.type !== EntityType.LINE || !l.start || !l.end) return;
-        
+
         // Basic containment check (partial overlap)
         if (Math.max(l.start.x, l.end.x) < box.minX || Math.min(l.start.x, l.end.x) > box.maxX) return;
         if (Math.max(l.start.y, l.end.y) < box.minY || Math.min(l.start.y, l.end.y) > box.maxY) return;
@@ -915,23 +940,23 @@ export const getGridIntersections = (box: Bounds, axisLines: DxfEntity[]): Point
 
     for (const h of hLines) {
         for (const v of vLines) {
-             // Simple intersection of infinite lines
-             // H: y = hy
-             // V: x = vx
-             // Intersection: (vx, hy)
-             const hy = (h.start!.y + h.end!.y) / 2;
-             const vx = (v.start!.x + v.end!.x) / 2;
+            // Simple intersection of infinite lines
+            // H: y = hy
+            // V: x = vx
+            // Intersection: (vx, hy)
+            const hy = (h.start!.y + h.end!.y) / 2;
+            const vx = (v.start!.x + v.end!.x) / 2;
 
-             // Check if intersection is roughly within segments
-             const hMinX = Math.min(h.start!.x, h.end!.x);
-             const hMaxX = Math.max(h.start!.x, h.end!.x);
-             const vMinY = Math.min(v.start!.y, v.end!.y);
-             const vMaxY = Math.max(v.start!.y, v.end!.y);
+            // Check if intersection is roughly within segments
+            const hMinX = Math.min(h.start!.x, h.end!.x);
+            const hMaxX = Math.max(h.start!.x, h.end!.x);
+            const vMinY = Math.min(v.start!.y, v.end!.y);
+            const vMaxY = Math.max(v.start!.y, v.end!.y);
 
-             if (vx >= hMinX - 100 && vx <= hMaxX + 100 &&
-                 hy >= vMinY - 100 && hy <= vMaxY + 100) {
-                 intersections.push({ x: vx, y: hy });
-             }
+            if (vx >= hMinX - 100 && vx <= hMaxX + 100 &&
+                hy >= vMinY - 100 && hy <= vMaxY + 100) {
+                intersections.push({ x: vx, y: hy });
+            }
         }
     }
     return intersections;
@@ -951,8 +976,8 @@ export const calculateMergeVector = (basePoints: Point[], targetPoints: Point[])
             const dx = Math.round(b.x - t.x);
             const dy = Math.round(b.y - t.y);
             // Quantize to avoid float errors (tolerance 50)
-            const key = `${Math.round(dx/50)}_${Math.round(dy/50)}`; 
-            
+            const key = `${Math.round(dx / 50)}_${Math.round(dy / 50)}`;
+
             const current = (diffCounts.get(key) || 0) + 1;
             diffCounts.set(key, current);
             if (!diffValues.has(key)) {
@@ -967,23 +992,23 @@ export const calculateMergeVector = (basePoints: Point[], targetPoints: Point[])
     }
 
     if (maxCount >= 1) { // At least one intersection match (usually need 2, but 1 is strictly minimum for translation)
-         return diffValues.get(bestKey) || null;
+        return diffValues.get(bestKey) || null;
     }
 
     return null;
 };
 
 export const boundsOverlap = (a: Bounds, b: Bounds): boolean => {
-  return !(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
+    return !(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
 };
 
 export const findParallelPolygonsBeam = (
-    lines: DxfEntity[], 
-    tolerance: number, 
-    resultLayer: string, 
-    obstacles: DxfEntity[], 
-    axisLines: DxfEntity[], 
-    textEntities: DxfEntity[], 
+    lines: DxfEntity[],
+    tolerance: number,
+    resultLayer: string,
+    obstacles: DxfEntity[],
+    axisLines: DxfEntity[],
+    textEntities: DxfEntity[],
     validWidths: Set<number>,
     rawLines?: DxfEntity[]
 ): DxfEntity[] => {
@@ -999,29 +1024,29 @@ export const findLayersAtPoint = (
     tolerance: number
 ): string[] => {
     const found = new Set<string>();
-    
+
     // Recursive visitor to handle nested blocks
     const visit = (ents: DxfEntity[], tr: { x: number, y: number, scale: Point, rotation: number }, parentLayer: string | null) => {
         for (const ent of ents) {
             const layer = ent.layer === '0' && parentLayer ? parentLayer : ent.layer;
             if (!activeLayers.has(layer) && ent.type !== EntityType.INSERT) continue;
-            
+
             // Helper: Transform local point to world space
-            const t = (pt: Point) => transformPoint(pt, tr.scale, tr.rotation, {x: tr.x, y: tr.y});
-            
+            const t = (pt: Point) => transformPoint(pt, tr.scale, tr.rotation, { x: tr.x, y: tr.y });
+
             let hit = false;
-            
+
             if (ent.type === EntityType.LINE && ent.start && ent.end) {
                 const p1 = t(ent.start);
                 const p2 = t(ent.end);
                 if (distancePointToLine(p, p1, p2) <= tolerance) hit = true;
             } else if (ent.type === EntityType.LWPOLYLINE && ent.vertices) {
                 const verts = ent.vertices.map(t);
-                for (let i=0; i<verts.length-1; i++) {
-                    if (distancePointToLine(p, verts[i], verts[i+1]) <= tolerance) { hit = true; break; }
+                for (let i = 0; i < verts.length - 1; i++) {
+                    if (distancePointToLine(p, verts[i], verts[i + 1]) <= tolerance) { hit = true; break; }
                 }
                 if (!hit && ent.closed && verts.length > 0) {
-                     if (distancePointToLine(p, verts[verts.length-1], verts[0]) <= tolerance) hit = true;
+                    if (distancePointToLine(p, verts[verts.length - 1], verts[0]) <= tolerance) hit = true;
                 }
             } else if (ent.type === EntityType.CIRCLE && ent.center && ent.radius) {
                 const c = t(ent.center);
@@ -1030,29 +1055,29 @@ export const findLayersAtPoint = (
                 const d = Math.sqrt(Math.pow(p.x - c.x, 2) + Math.pow(p.y - c.y, 2));
                 if (Math.abs(d - r) <= tolerance) hit = true;
             } else if (ent.type === EntityType.INSERT && ent.blockName && blocks[ent.blockName]) {
-                const bBase = blockBasePoints[ent.blockName] || {x:0, y:0};
-                
+                const bBase = blockBasePoints[ent.blockName] || { x: 0, y: 0 };
+
                 const rows = ent.rowCount || 1;
                 const cols = ent.columnCount || 1;
                 const cSpace = ent.columnSpacing || 0;
                 const rSpace = ent.rowSpacing || 0;
-                
+
                 if (rows === 1 && cols === 1) {
-                    const combinedScale = { x: tr.scale.x * (ent.scale?.x||1), y: tr.scale.y * (ent.scale?.y||1) };
-                    const combinedRot = tr.rotation + (ent.rotation||0);
-                    
+                    const combinedScale = { x: tr.scale.x * (ent.scale?.x || 1), y: tr.scale.y * (ent.scale?.y || 1) };
+                    const combinedRot = tr.rotation + (ent.rotation || 0);
+
                     // Transform calculation for nested block base mapping
-                    const bx = -bBase.x * (ent.scale?.x||1);
-                    const by = -bBase.y * (ent.scale?.y||1);
-                    const rad = (ent.rotation||0) * Math.PI/180;
+                    const bx = -bBase.x * (ent.scale?.x || 1);
+                    const by = -bBase.y * (ent.scale?.y || 1);
+                    const rad = (ent.rotation || 0) * Math.PI / 180;
                     const rx = bx * Math.cos(rad) - by * Math.sin(rad);
                     const ry = bx * Math.sin(rad) + by * Math.cos(rad);
-                    
-                    const px = rx + (ent.start?.x||0);
-                    const py = ry + (ent.start?.y||0);
-                    
-                    const worldOrigin = t({x: px, y: py});
-                    
+
+                    const px = rx + (ent.start?.x || 0);
+                    const py = ry + (ent.start?.y || 0);
+
+                    const worldOrigin = t({ x: px, y: py });
+
                     visit(blocks[ent.blockName], {
                         x: worldOrigin.x,
                         y: worldOrigin.y,
@@ -1061,12 +1086,12 @@ export const findLayersAtPoint = (
                     }, layer);
                 }
             }
-            
+
             if (hit) found.add(layer);
         }
     }
-    
-    visit(entities, {x:0, y:0, scale:{x:1, y:1}, rotation:0}, null);
-    
+
+    visit(entities, { x: 0, y: 0, scale: { x: 1, y: 1 }, rotation: 0 }, null);
+
     return Array.from(found);
 };

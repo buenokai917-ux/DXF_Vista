@@ -96,7 +96,7 @@ export const collectBeamSources = (
     // 3. Valid Widths (From Text)
     const labelLayers = activeProject.layerConfig[SemanticLayer.BEAM_LABEL];
     const validWidths = new Set<number>();
-    
+
     const scanForWidths = (ents: DxfEntity[]) => {
         ents.forEach(t => {
             if (!t.text) return;
@@ -115,12 +115,12 @@ export const collectBeamSources = (
     };
 
     scanForWidths(textEntities);
-    
+
     if (labelLayers.length > 0) {
-         const rawLabels = extractEntities(labelLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
+        const rawLabels = extractEntities(labelLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
             .filter(e => e.type === EntityType.TEXT);
-         const boundedLabels = filterEntitiesInBounds(rawLabels, baseBounds);
-         scanForWidths(boundedLabels);
+        const boundedLabels = filterEntitiesInBounds(rawLabels, baseBounds);
+        scanForWidths(boundedLabels);
     }
 
     return {
@@ -277,10 +277,10 @@ export const mergeCollinearBeams = (
 
     const isGapCrossed = (pStart: Point, pEnd: Point, width: number, beamU: Point): boolean => {
         const mid = { x: (pStart.x + pEnd.x) / 2, y: (pStart.y + pEnd.y) / 2 };
-        
+
         for (const other of allBeamOBBs) {
             const dot = Math.abs(beamU.x * other.u.x + beamU.y * other.u.y);
-            if (dot > 0.1) continue; 
+            if (dot > 0.1) continue;
 
             const vDist = Math.abs((mid.x - other.center.x) * other.v.x + (mid.y - other.center.y) * other.v.y);
             const uDist = Math.abs((mid.x - other.center.x) * other.u.x + (mid.y - other.center.y) * other.u.y);
@@ -604,7 +604,7 @@ export const detectIntersections = (beams: DxfEntity[]): { intersections: DxfEnt
         let shape: IntersectionShape = 'L';
         if (arms === 4) shape = 'C';
         else if (arms === 3) shape = 'T';
-        
+
         let tAngle: number | undefined = undefined;
         if (shape === 'T') {
             // Missing direction determines stem direction

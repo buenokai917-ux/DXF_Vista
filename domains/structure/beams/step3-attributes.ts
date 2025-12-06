@@ -7,7 +7,7 @@ import { extractEntities } from '../../../utils/dxfHelpers';
 import { collectBeamSources, computeOBB, OBB, DEFAULT_BEAM_STAGE_COLORS } from './common';
 
 interface BeamAttributes {
-    code: string; 
+    code: string;
     span?: string | null;
     width: number;
     height: number;
