@@ -49,6 +49,7 @@ const App: React.FC = () => {
 
   // Search State
   const [searchText, setSearchText] = useState('');
+  const [lastSearchedTerm, setLastSearchedTerm] = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [currentResultIdx, setCurrentResultIdx] = useState(-1);
   
@@ -319,6 +320,7 @@ const App: React.FC = () => {
 
   const handleClearSearch = () => {
       setSearchText('');
+      setLastSearchedTerm('');
       setSearchResults([]);
       setCurrentResultIdx(-1);
   };
@@ -327,8 +329,16 @@ const App: React.FC = () => {
       if (!activeProject || !searchText.trim()) return;
       
       setIsLoading(true);
+      setLastSearchedTerm(searchText);
+      
       setTimeout(() => {
-          const allEntities = extractEntities(activeProject.data.layers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
+          // FIX 1: Only search in active layers
+          const allEntities = extractEntities(
+              Array.from(activeProject.activeLayers), 
+              activeProject.data.entities, 
+              activeProject.data.blocks, 
+              activeProject.data.blockBasePoints
+          );
           
           const query = searchText.toLowerCase();
           const matches: SearchResult[] = [];
@@ -359,14 +369,17 @@ const App: React.FC = () => {
           setIsLoading(false);
 
           if (matches.length === 0) {
-              alert("No matches found.");
+              alert("No matches found in active layers.");
           }
       }, 50);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
       if (e.key === 'Enter') {
-          if (searchResults.length > 0) {
+          // FIX 2: Check if text has changed to trigger new search
+          if (searchText !== lastSearchedTerm) {
+              performTextSearch();
+          } else if (searchResults.length > 0) {
               handleNextResult();
           } else {
               performTextSearch();
