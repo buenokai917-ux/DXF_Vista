@@ -128,18 +128,46 @@ const App: React.FC = () => {
     // Try multiple encodings and pick the one with the fewest replacement chars ()
     const decodeBufferBestEffort = (buffer: ArrayBuffer) => {
       const preferred = ['utf-8', 'gb18030', 'gbk', 'big5', 'shift_jis', 'windows-1252'];
-      const seen = new Set<string>();
-      let best = { text: '', enc: 'utf-8', score: Number.POSITIVE_INFINITY };
+      const codepageMap: Record<string, string> = {
+        'ANSI_936': 'gb18030',
+        'ANSI_1252': 'windows-1252',
+        'UTF-8': 'utf-8',
+        'UTF8': 'utf-8'
+      };
 
-      preferred.forEach(enc => {
+      const extractCodepage = (buf: Uint8Array): string | null => {
+        try {
+          const ascii = new TextDecoder('ascii', { fatal: false }).decode(buf);
+          const match = ascii.match(/\$DWGCODEPAGE\s*[\r\n]+\s*3\s*[\r\n]+([A-Za-z0-9_]+)/i);
+          return match ? match[1].trim() : null;
+        } catch {
+          return null;
+        }
+      };
+
+      const bufView = new Uint8Array(buffer);
+      const codepage = extractCodepage(bufView);
+      const hinted = codepage ? codepageMap[codepage.toUpperCase()] : undefined;
+      const candidates = hinted ? [hinted, ...preferred] : preferred;
+
+      const seen = new Set<string>();
+      let best = { text: '', enc: hinted || 'utf-8', quality: -Infinity, repl: Number.POSITIVE_INFINITY };
+
+      candidates.forEach(enc => {
         if (!enc || seen.has(enc)) return;
         seen.add(enc);
         try {
           const dec = new TextDecoder(enc as any, { fatal: false });
-          const text = dec.decode(new Uint8Array(buffer));
-          const score = (text.match(/\uFFFD/g) || []).length;
-          if (score < best.score) {
-            best = { text, enc, score };
+          const text = dec.decode(bufView);
+          const replacements = (text.match(/\uFFFD/g) || []).length;
+          const cjkCount = (text.match(/[\u4e00-\u9fff]/g) || []).length;
+          const quality = cjkCount / (1 + replacements); // prefer readable CJK while heavily penalizing replacement characters
+
+          if (
+            quality > best.quality ||
+            (quality === best.quality && replacements < best.repl)
+          ) {
+            best = { text, enc, quality, repl: replacements };
           }
         } catch (e) {
           // Ignore unsupported encodings
@@ -147,11 +175,11 @@ const App: React.FC = () => {
       });
 
       if (best.text === '') {
-        best.text = new TextDecoder().decode(new Uint8Array(buffer));
+        best.text = new TextDecoder().decode(bufView);
         best.enc = 'utf-8';
       }
 
-      return best;
+      return { text: best.text, enc: best.enc };
     };
     
     const processFiles = async () => {

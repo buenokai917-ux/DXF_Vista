@@ -1,4 +1,4 @@
-﻿import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { parseDxf } from "../utils/dxfParser";
 import { ProjectFile, DxfEntity, SemanticLayer } from "../types";
 import {
@@ -118,17 +118,37 @@ describe("structure integration suite", () => {
     const buffer = fs.readFileSync(fixturePath);
     const decodeBufferBestEffort = (buf: Buffer) => {
       const preferred = ["utf-8", "gb18030", "gbk", "big5", "shift_jis", "windows-1252"];
+      const codepageMap: Record<string, string> = {
+        ANSI_936: "gb18030",
+        ANSI_1252: "windows-1252",
+        UTF8: "utf-8",
+        "UTF-8": "utf-8",
+      };
+      const extractCodepage = (raw: Buffer): string | null => {
+        try {
+          const ascii = new TextDecoder("ascii", { fatal: false }).decode(raw);
+          const match = ascii.match(/\$DWGCODEPAGE\s*[\r\n]+\s*3\s*[\r\n]+([A-Za-z0-9_]+)/i);
+          return match ? match[1].trim() : null;
+        } catch {
+          return null;
+        }
+      };
+      const codepage = extractCodepage(buf);
+      const hinted = codepage ? codepageMap[codepage.toUpperCase()] : undefined;
+      const candidates = hinted ? [hinted, ...preferred] : preferred;
       const seen = new Set<string>();
-      let best = { text: "", enc: "utf-8", score: Number.POSITIVE_INFINITY };
-      preferred.forEach((enc) => {
+      let best = { text: "", enc: "utf-8", quality: -Infinity, repl: Number.POSITIVE_INFINITY };
+      candidates.forEach((enc) => {
         if (!enc || seen.has(enc)) return;
         seen.add(enc);
         try {
           const dec = new TextDecoder(enc as any, { fatal: false });
           const text = dec.decode(buf);
-          const score = (text.match(/\uFFFD/g) || []).length;
-          if (score < best.score) {
-            best = { text, enc, score };
+          const replacements = (text.match(/\uFFFD/g) || []).length;
+          const cjkCount = (text.match(/[\u4e00-\u9fff]/g) || []).length;
+          const quality = cjkCount / (1 + replacements);
+          if (quality > best.quality || (quality === best.quality && replacements < best.repl)) {
+            best = { text, enc, quality, repl: replacements };
           }
         } catch {
           // ignore unsupported enc
