@@ -26,7 +26,8 @@ type Harness = {
 
 const KNOWN_CONFIGS: Record<string, Record<SemanticLayer, string[]>> = {
   "配筋简图.dxf": {
-    [SemanticLayer.AXIS]: ["AXIS", "AXIS_DIM", "AXIS_NUM", "AXIS_TEXT"],
+    [SemanticLayer.AXIS]: ["AXIS"],
+    [SemanticLayer.AXIS_OTHER]: ["AXIS_DIM", "AXIS_NUM", "AXIS_TEXT"],
     [SemanticLayer.COLUMN]: ["COLU"],
     [SemanticLayer.WALL]: ["WALL"],
     [SemanticLayer.BEAM]: ["BEAM", "BEAM_CON"],
@@ -46,6 +47,7 @@ const buildLayerConfig = (parsedData: ReturnType<typeof parseDxf>, name: string)
 
   const config: Record<SemanticLayer, string[]> = {
     [SemanticLayer.AXIS]: [],
+    [SemanticLayer.AXIS_OTHER]: [],
     [SemanticLayer.COLUMN]: [],
     [SemanticLayer.WALL]: [],
     [SemanticLayer.BEAM]: [],
