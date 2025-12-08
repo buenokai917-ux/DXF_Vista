@@ -1,4 +1,5 @@
 
+
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { jsPDF } from 'jspdf';
 import { parseDxf } from './utils/dxfParser';
@@ -64,6 +65,7 @@ const App: React.FC = () => {
   const autoDetectLayers = (layers: string[], usedLayers: Set<string>): Record<SemanticLayer, string[]> => {
     const config: Record<SemanticLayer, string[]> = {
       [SemanticLayer.AXIS]: [],
+      [SemanticLayer.AXIS_OTHER]: [],
       [SemanticLayer.COLUMN]: [],
       [SemanticLayer.WALL]: [],
       [SemanticLayer.BEAM]: [],
@@ -81,7 +83,16 @@ const App: React.FC = () => {
       // Filter out dsp3d/dsptext layers (usually 3D generated artifacts)
       if (lower.startsWith('dsp3d') || lower.includes('dsptext')) return;
 
-      if (/axis|轴|grid/i.test(l)) config[SemanticLayer.AXIS].push(l);
+      // AXIS Separation Logic
+      // 1. Primary Axis: strict naming or specific keywords usually denoting lines
+      if (/^axis$/i.test(l) || /^dote$/i.test(l) || /^0[-_]axis$/i.test(l) || /^axis[-_]line$/i.test(l) || l === '轴线') {
+          config[SemanticLayer.AXIS].push(l);
+      }
+      // 2. Other Axis: fuzzy matching (dimensions, grids, text)
+      else if (/axis|轴|grid/i.test(l)) {
+          config[SemanticLayer.AXIS_OTHER].push(l);
+      }
+      
       else if (/colu|column|柱/i.test(l)) config[SemanticLayer.COLUMN].push(l);
       else if (/wall|墙/i.test(l)) config[SemanticLayer.WALL].push(l);
       else if (/beam|梁/i.test(l) && !/text|dim|anno|标注|文字/i.test(l)) config[SemanticLayer.BEAM].push(l);

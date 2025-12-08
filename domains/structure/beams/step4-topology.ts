@@ -108,9 +108,10 @@ const cutFragment = (frag: Fragment, box: Bounds): Fragment[] => {
         tMax = Math.max(tMax, t);
     });
 
-    // Add tolerance to ensure clean cut
-    tMin -= 5; 
-    tMax += 5;
+    // Use a minimal epsilon (floating precision only) so we don't over-trim segments
+    const EPS = 0; // previously 5mm padding caused visible over-cut
+    tMin -= EPS; 
+    tMax += EPS;
 
     // Beam interval
     const bStart = obb.minT;

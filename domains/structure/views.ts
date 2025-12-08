@@ -21,7 +21,11 @@ export const runCalculateSplitRegions = (
   const resultLayer = 'VIEWPORT_CALC';
   const debugLayer = 'VIEWPORT_DEBUG';
 
-  const axisLayers = activeProject.layerConfig[SemanticLayer.AXIS];
+  const axisLayers = [
+      ...activeProject.layerConfig[SemanticLayer.AXIS],
+      ...activeProject.layerConfig[SemanticLayer.AXIS_OTHER]
+  ];
+
   if (axisLayers.length === 0) {
     if (!suppressAlert) alert('No AXIS layers configured. Please check Layer Configuration.');
     return null;

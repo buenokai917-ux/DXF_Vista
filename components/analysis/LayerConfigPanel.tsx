@@ -21,6 +21,7 @@ export const LayerConfigPanel: React.FC<LayerConfigPanelProps> = ({
 
     const rows = [
         { key: SemanticLayer.AXIS, label: 'Axis Layer' },
+        { key: SemanticLayer.AXIS_OTHER, label: 'Other Axis Layer' },
         { key: SemanticLayer.COLUMN, label: 'Column Layer' },
         { key: SemanticLayer.WALL, label: 'Wall Layer' },
         { key: SemanticLayer.BEAM, label: 'Beam Layer' },
