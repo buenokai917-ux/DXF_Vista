@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+﻿import { describe, expect, it } from "vitest";
 import { parseDxf } from "../utils/dxfParser";
 import { ProjectFile, DxfEntity, SemanticLayer } from "../types";
 import {
@@ -25,7 +25,7 @@ type Harness = {
 };
 
 const KNOWN_CONFIGS: Record<string, Record<SemanticLayer, string[]>> = {
-  "配筋简图.dxf": {
+  "test_beam1.dxf": {
     [SemanticLayer.AXIS]: ["AXIS"],
     [SemanticLayer.AXIS_OTHER]: ["AXIS_DIM", "AXIS_NUM", "AXIS_TEXT"],
     [SemanticLayer.COLUMN]: ["COLU"],
@@ -112,9 +112,9 @@ const countOnLayer = (entities: DxfEntity[], layer: string) =>
   entities.filter((e) => e.layer.toUpperCase() === layer.toUpperCase()).length;
 
 describe("structure integration suite", () => {
-  it("processes 配筋简图.dxf through the full pipeline", async () => {
+  it("processes test_beam1.dxf through the full pipeline", async () => {
     const testDir = path.dirname(fileURLToPath(import.meta.url));
-    const fixturePath = path.join(testDir, "data", "配筋简图.dxf");
+    const fixturePath = path.join(testDir, "data", "test_beam1.dxf");
     const buffer = fs.readFileSync(fixturePath);
     const decodeBufferBestEffort = (buf: Buffer) => {
       const preferred = ["utf-8", "gb18030", "gbk", "big5", "shift_jis", "windows-1252"];
@@ -163,7 +163,7 @@ describe("structure integration suite", () => {
 
     const { text: decoded, enc: usedEnc } = decodeBufferBestEffort(buffer);
     const parsed = parseDxf(decoded, usedEnc);
-    const harness = createHarness(parsed, "配筋简图.dxf");
+    const harness = createHarness(parsed, "test_beam1.dxf");
     const { getActive, getProjects, setProjects, setLayerColors } = harness;
 
     expect(parsed.layers.length).toBeGreaterThan(0);
