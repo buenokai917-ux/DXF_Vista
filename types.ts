@@ -1,4 +1,5 @@
 
+
 export enum EntityType {
   LINE = 'LINE',
   LWPOLYLINE = 'LWPOLYLINE',
@@ -13,6 +14,7 @@ export enum EntityType {
 
 export enum SemanticLayer {
   AXIS = 'AXIS',
+  AXIS_OTHER = 'AXIS_OTHER',
   COLUMN = 'COLUMN',
   WALL = 'WALL',
   BEAM = 'BEAM',
@@ -159,6 +161,37 @@ export interface BeamLabelInfo {
     };
 }
 
+export interface ColumnInfo {
+    id: string;
+    layer: string;
+    bounds: Bounds;
+    width: number;
+    height: number;
+    center: Point;
+}
+
+export interface WallInfo {
+    id: string;
+    layer: string;
+    bounds: Bounds;
+    thickness: number;
+    center: Point;
+}
+
+export interface ViewMergeMapping {
+    sourceRegionIndex: number;
+    targetRegionIndex: number;
+    vector: Point;
+    bounds: Bounds; 
+    title: string;
+}
+
+export interface MergedViewData {
+    mappings: ViewMergeMapping[];
+    beamLabels: BeamLabelInfo[];
+    extras?: DxfEntity[]; // Leader lines, frames, etc.
+}
+
 export interface ProjectFile {
   id: string;
   name: string;
@@ -167,6 +200,9 @@ export interface ProjectFile {
   filledLayers: Set<string>;
   layerConfig: Record<SemanticLayer, string[]>;
   splitRegions: ViewportRegion[] | null;
+  mergedViewData?: MergedViewData;
+  columns?: ColumnInfo[];
+  walls?: WallInfo[];
   beamLabels?: BeamLabelInfo[];
   beamStep2GeoInfos?: BeamStep2GeoInfo[];
   beamStep2InterInfos?: BeamIntersectionInfo[];
