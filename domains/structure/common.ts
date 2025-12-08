@@ -18,6 +18,25 @@ export const findEntitiesInAllProjects = (
     return results;
 };
 
+export const prioritizeLayers = (existingLayers: string[], preferredLayers: Iterable<string>): string[] => {
+    const seen = new Set<string>();
+    const ordered: string[] = [];
+
+    for (const layer of preferredLayers) {
+        if (seen.has(layer)) continue;
+        seen.add(layer);
+        ordered.push(layer);
+    }
+
+    existingLayers.forEach(l => {
+        if (seen.has(l)) return;
+        seen.add(l);
+        ordered.push(l);
+    });
+
+    return ordered;
+};
+
 export const updateProject = (
     activeProject: ProjectFile,
     setProjects: React.Dispatch<React.SetStateAction<ProjectFile[]>>,
@@ -40,9 +59,7 @@ export const updateProject = (
     const filteredEntities = activeProject.data.entities.filter(e => !affectedLayers.has(e.layer));
 
     // 3. Register new layers if they don't exist in the project
-    const currentLayersSet = new Set(activeProject.data.layers);
-    affectedLayers.forEach(l => currentLayersSet.add(l));
-    const updatedLayersList = Array.from(currentLayersSet).sort();
+    const updatedLayersList = prioritizeLayers(activeProject.data.layers, affectedLayers);
 
     const updatedData = {
         ...activeProject.data,

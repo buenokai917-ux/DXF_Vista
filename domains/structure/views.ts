@@ -2,7 +2,7 @@
 import React from 'react';
 import { DxfEntity, EntityType, ProjectFile, ViewportRegion, Point, Bounds, SemanticLayer } from '../../types';
 import { extractEntities } from '../../utils/dxfHelpers';
-import { boundsOverlap, expandBounds, isPointInBounds } from './common';
+import { boundsOverlap, expandBounds, isPointInBounds, prioritizeLayers } from './common';
 import {
   calculateMergeVector,
   getEntityBounds,
@@ -114,7 +114,7 @@ export const runCalculateSplitRegions = (
   const updatedData = {
     ...activeProject.data,
     entities: [...activeProject.data.entities, ...newEntities, ...debugEntities],
-    layers: [...new Set([...activeProject.data.layers, resultLayer, debugLayer])]
+    layers: prioritizeLayers(activeProject.data.layers, [resultLayer, debugLayer])
   };
 
   setLayerColors(prev => ({ ...prev, [resultLayer]: '#FF00FF', [debugLayer]: '#444444' }));
