@@ -1,4 +1,5 @@
 import { ProjectFile, AnalysisExportPayload, SemanticLayer } from '../../types';
+import { DEFAULT_BEAM_STAGE_COLORS } from './beams/common';
 
 /**
  * Build export payload capturing analysis state (split/merge and configs).
@@ -18,6 +19,8 @@ export const buildAnalysisExportPayload = (project: ProjectFile): AnalysisExport
     layerConfig: project.layerConfig,
     splitRegions: project.splitRegions,
     mergedViewData: project.mergedViewData,
+    columns: project.columns,
+    walls: project.walls,
     data: project.data,
     activeLayers: Array.from(project.activeLayers),
     filledLayers: Array.from(project.filledLayers),
@@ -45,6 +48,14 @@ const ensureLayerColors = (
   if (payload.data.layers.includes('VIEWPORT_DEBUG')) colors['VIEWPORT_DEBUG'] = '#444444';
   if (payload.data.layers.includes('MERGE_LABEL_H')) colors['MERGE_LABEL_H'] = '#00FFFF';
   if (payload.data.layers.includes('MERGE_LABEL_V')) colors['MERGE_LABEL_V'] = '#FF00FF';
+  if (payload.data.layers.includes('COLU_CALC')) colors['COLU_CALC'] = '#f59e0b';
+  if (payload.data.layers.includes('WALL_CALC')) colors['WALL_CALC'] = '#94a3b8';
+  // Beam pipeline layers
+  Object.entries(DEFAULT_BEAM_STAGE_COLORS).forEach(([layer, color]) => {
+    if (payload.data.layers.includes(layer)) {
+      colors[layer] = color;
+    }
+  });
   if (Object.keys(colors).length > 0) {
     setLayerColors(prev => ({ ...prev, ...colors }));
   }
@@ -76,12 +87,16 @@ export const importAnalysisState = (
           payload.filledLayers?.forEach(l => newActive.add(l));
           const mergedViewData = payload.mergedViewData || p.mergedViewData;
           const splitRegions = payload.splitRegions || p.splitRegions;
+          const columns = payload.columns || p.columns;
+          const walls = payload.walls || p.walls;
           return {
             ...p,
             data: payload.data,
             layerConfig: payload.layerConfig || p.layerConfig,
             splitRegions,
             mergedViewData,
+            columns,
+            walls,
             activeLayers: newActive.size > 0 ? newActive : p.activeLayers,
             filledLayers: new Set(payload.filledLayers || p.filledLayers)
           };

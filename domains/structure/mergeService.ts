@@ -27,12 +27,23 @@ export const calculateMergeViews = (project: ProjectFile): MergeCalculationResul
     return null;
   }
 
+  // Only merge viewports that look like beam drawings (梁 / beam / X向 / Y向)
+  const isBeamViewportName = (name: string) => {
+    const upper = name.toUpperCase();
+    return name.includes('梁') || upper.includes('BEAM') || name.includes('X向') || name.includes('Y向');
+  };
+
+  const beamRegions = regions.filter(r => isBeamViewportName(r.title || ''));
+  if (beamRegions.length === 0) {
+    return null;
+  }
+
   const axisLayers = project.layerConfig[SemanticLayer.AXIS];
   const axisLines = extractEntities(axisLayers, project.data.entities, project.data.blocks, project.data.blockBasePoints)
     .filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
 
   const groups: Record<string, ViewportRegion[]> = {};
-  regions.forEach(r => {
+  beamRegions.forEach(r => {
     const key = r.info ? r.info.prefix : r.title;
     if (!groups[key]) groups[key] = [];
     groups[key].push(r);

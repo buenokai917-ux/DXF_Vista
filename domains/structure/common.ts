@@ -47,7 +47,8 @@ export const updateProject = (
     contextLayers: string[], 
     fillLayer: boolean,
     splitRegionsUpdate?: ViewportRegion[],
-    layersToHide: string[] = []
+    layersToHide: string[] = [],
+    applyExtra?: (project: ProjectFile) => Partial<ProjectFile>
 ) => {
     // 1. Identify all layers impacted by newEntities (Result Layer + any layers in the new entity list)
     const affectedLayers = new Set<string>();
@@ -95,7 +96,8 @@ export const updateProject = (
                 data: updatedData, 
                 activeLayers: newActive, 
                 filledLayers: newFilled, 
-                splitRegions: splitRegionsUpdate || p.splitRegions
+                splitRegions: splitRegionsUpdate || p.splitRegions,
+                ...(applyExtra ? applyExtra(p) : {})
             };
         }
         return p;

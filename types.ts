@@ -93,6 +93,8 @@ export interface AnalysisExportPayload {
   layerConfig: Record<SemanticLayer, string[]>;
   splitRegions: ViewportRegion[] | null;
   mergedViewData?: MergedViewData;
+  columns?: ColumnInfo[];
+  walls?: WallInfo[];
   data: DxfData;
   activeLayers: string[];
   filledLayers: string[];
