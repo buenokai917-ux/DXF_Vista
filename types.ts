@@ -41,7 +41,12 @@ export interface DxfEntity {
   vertices?: Point[];
   closed?: boolean;
   text?: string;
-  
+
+  // Explicit Visual Properties
+  color?: number; // ACI Color (Group 62)
+  lineType?: string; // Linetype Name (Group 6)
+  lineTypeScale?: number;
+
   // For Dimensions
   measureStart?: Point; // Code 13, 23
   measureEnd?: Point;   // Code 14, 24
@@ -50,7 +55,7 @@ export interface DxfEntity {
   blockName?: string;
   scale?: Point;
   rotation?: number;
-  
+
   // For MINSERT
   columnCount?: number;
   rowCount?: number;
@@ -66,9 +71,16 @@ export interface DxfEntity {
   xAxis?: Point; // For MTEXT direction
 }
 
+export interface DxfLayer {
+  name: string;
+  color: number; // ACI 1-255
+  lineType: string;
+}
+
 export interface DxfData {
   entities: DxfEntity[];
   layers: string[];
+  layerDictionary: Record<string, DxfLayer>;
   blocks: Record<string, DxfEntity[]>;
   blockBasePoints: Record<string, Point>;
 }
@@ -95,113 +107,113 @@ export interface Bounds {
 }
 
 export interface SearchResult {
-    bounds: Bounds;
-    rotation?: number;
+  bounds: Bounds;
+  rotation?: number;
 }
 
 export interface ViewportRegion {
-    bounds: Bounds;
-    title: string;
-    info: { prefix: string, index: number } | null;
+  bounds: Bounds;
+  title: string;
+  info: { prefix: string, index: number } | null;
 }
 
 export interface BeamStep2GeoInfo {
-    id: string;
-    layer: string;
-    shape: 'rect' | 'poly';
-    vertices: Point[];
-    bounds: { startX: number, startY: number, endX: number, endY: number };
-    center?: Point;
-    radius?: number;
-    angle?: number;
-    beamIndex: number;
+  id: string;
+  layer: string;
+  shape: 'rect' | 'poly';
+  vertices: Point[];
+  bounds: { startX: number, startY: number, endX: number, endY: number };
+  center?: Point;
+  radius?: number;
+  angle?: number;
+  beamIndex: number;
 }
 
 export type IntersectionShape = 'L' | 'T' | 'C'; // C = Cross
 
 export interface BeamIntersectionInfo {
-    id: string;
-    layer: string;
-    shape: 'rect';
-    vertices: Point[];
-    bounds: { startX: number, startY: number, endX: number, endY: number };
-    center: Point;
-    radius?: number;
-    parts?: DxfEntity[];
-    junction: IntersectionShape;
-    angle?: number;
-    beamIndexes: number[];
+  id: string;
+  layer: string;
+  shape: 'rect';
+  vertices: Point[];
+  bounds: { startX: number, startY: number, endX: number, endY: number };
+  center: Point;
+  radius?: number;
+  parts?: DxfEntity[];
+  junction: IntersectionShape;
+  angle?: number;
+  beamIndexes: number[];
 }
 
 export interface BeamStep3AttrInfo {
-    id: string;
-    layer: string;
-    shape: 'rect';
-    vertices: Point[];
-    bounds: { startX: number, startY: number, endX: number, endY: number };
-    center?: Point;
-    radius?: number;
-    angle?: number;
-    beamIndex: number;
-    // Attributes
-    code: string;
-    span?: string | null;
-    width: number;
-    height: number;
-    rawLabel: string;
+  id: string;
+  layer: string;
+  shape: 'rect';
+  vertices: Point[];
+  bounds: { startX: number, startY: number, endX: number, endY: number };
+  center?: Point;
+  radius?: number;
+  angle?: number;
+  beamIndex: number;
+  // Attributes
+  code: string;
+  span?: string | null;
+  width: number;
+  height: number;
+  rawLabel: string;
 }
 
 export interface BeamStep4TopologyInfo extends BeamStep3AttrInfo {
-    length: number;
-    volume: number;
-    parentBeamIndex: number;
+  length: number;
+  volume: number;
+  parentBeamIndex: number;
 }
 
 export interface BeamLabelInfo {
-    id: string;
-    sourceLayer: string;
-    orientation: number; // angle in degrees
-    textRaw: string;
-    textInsert: Point | null;
-    leaderStart: Point | null;
-    leaderEnd: Point | null;
-    parsed?: {
-        code: string;
-        span: string | null;
-        width?: number;
-        height?: number;
-    };
+  id: string;
+  sourceLayer: string;
+  orientation: number; // angle in degrees
+  textRaw: string;
+  textInsert: Point | null;
+  leaderStart: Point | null;
+  leaderEnd: Point | null;
+  parsed?: {
+    code: string;
+    span: string | null;
+    width?: number;
+    height?: number;
+  };
 }
 
 export interface ColumnInfo {
-    id: string;
-    layer: string;
-    bounds: Bounds;
-    width: number;
-    height: number;
-    center: Point;
+  id: string;
+  layer: string;
+  bounds: Bounds;
+  width: number;
+  height: number;
+  center: Point;
 }
 
 export interface WallInfo {
-    id: string;
-    layer: string;
-    bounds: Bounds;
-    thickness: number;
-    center: Point;
+  id: string;
+  layer: string;
+  bounds: Bounds;
+  thickness: number;
+  center: Point;
 }
 
 export interface ViewMergeMapping {
-    sourceRegionIndex: number;
-    targetRegionIndex: number;
-    vector: Point;
-    bounds: Bounds; 
-    title: string;
+  sourceRegionIndex: number;
+  targetRegionIndex: number;
+  vector: Point;
+  bounds: Bounds;
+  title: string;
 }
 
 export interface MergedViewData {
-    mappings: ViewMergeMapping[];
-    beamLabels: BeamLabelInfo[];
-    extras?: DxfEntity[]; // Leader lines, frames, etc.
+  mappings: ViewMergeMapping[];
+  beamLabels: BeamLabelInfo[];
+  extras?: DxfEntity[]; // Leader lines, frames, etc.
 }
 
 export interface ProjectFile {

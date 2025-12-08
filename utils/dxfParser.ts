@@ -1,4 +1,5 @@
-import { DxfData, DxfEntity, EntityType, Point } from '../types';
+
+import { DxfData, DxfEntity, EntityType, Point, DxfLayer } from '../types';
 
 /**
  * Helper to decode DXF string format.
@@ -20,7 +21,7 @@ const decodeDxfString = (str: string, encoding: string = 'utf-8'): string => {
       return new TextDecoder(encoding).decode(bytes);
     } catch (e) {
       // Fallback: treat as unicode code point or raw
-      return String.fromCharCode(parseInt(hex, 16)); 
+      return String.fromCharCode(parseInt(hex, 16));
     }
   });
 
@@ -38,7 +39,7 @@ const decodeDxfString = (str: string, encoding: string = 'utf-8'): string => {
   s = s.replace(/%%c/gi, 'ø');
   s = s.replace(/%%d/gi, '°');
   s = s.replace(/%%p/gi, '±');
-  s = s.replace(/%%u/gi, ''); 
+  s = s.replace(/%%u/gi, '');
   s = s.replace(/%%o/gi, '');
 
   return s.trim();
@@ -54,17 +55,19 @@ export const parseDxf = (dxfContent: string, encoding: string = 'utf-8'): DxfDat
   const blocks: Record<string, DxfEntity[]> = {};
   const blockBasePoints: Record<string, Point> = {};
   const layers = new Set<string>();
+  const layerDictionary: Record<string, DxfLayer> = {};
 
   let section = 'NONE';
   let tableType = 'NONE';
-  
+  let currentLayerObj: DxfLayer | null = null;
+
   // For Block Parsing
   let activeBlockName: string | null = null;
-  
+
   // For Entity Parsing
   let currentEntity: Partial<DxfEntity> | null = null;
   let inPolyline = false;
-  
+
   let i = 0;
 
   while (i < lines.length) {
@@ -97,89 +100,100 @@ export const parseDxf = (dxfContent: string, encoding: string = 'utf-8'): DxfDat
     // --- TABLES SECTION ---
     if (section === 'TABLES') {
       if (code === 0 && value === 'TABLE') {
+        currentLayerObj = null;
         continue;
       }
-      
+      if (code === 0 && value === 'ENDTAB') {
+        tableType = 'NONE';
+        currentLayerObj = null;
+        continue;
+      }
+
       if (code === 2 && value === 'LAYER') {
         tableType = 'LAYER';
-      } else if (code === 0 && value === 'ENDTAB') {
-        tableType = 'NONE';
       }
 
       if (tableType === 'LAYER') {
         if (code === 2) {
-            layers.add(decodeDxfString(value, encoding));
+          const name = decodeDxfString(value, encoding);
+          // Initialize with defaults (Color 7 = White/Black, Continuous)
+          currentLayerObj = { name, color: 7, lineType: 'CONTINUOUS' };
+          layers.add(name);
+          layerDictionary[name] = currentLayerObj;
+        } else if (currentLayerObj) {
+          if (code === 62) currentLayerObj.color = parseInt(value, 10);
+          else if (code === 6) currentLayerObj.lineType = value;
         }
       }
     }
 
     // --- BLOCKS SECTION ---
     if (section === 'BLOCKS') {
-       if (code === 0) {
-          if (value === 'BLOCK') {
-             activeBlockName = null;
-          } else if (value === 'ENDBLK') {
-             if (currentEntity && activeBlockName && blocks[activeBlockName]) {
-                 finalizeEntity(currentEntity, blocks[activeBlockName], layers);
-                 currentEntity = null;
-             }
-             activeBlockName = null;
-          } else {
-             if (activeBlockName) {
-                 handleEntityStart(value, 
-                   (ent) => {
-                       if (!blocks[activeBlockName!]) blocks[activeBlockName!] = [];
-                       finalizeEntity(ent, blocks[activeBlockName!], layers);
-                   }, 
-                   () => currentEntity, 
-                   (e) => currentEntity = e,
-                   () => inPolyline,
-                   (b) => inPolyline = b
-                 );
-             }
+      if (code === 0) {
+        if (value === 'BLOCK') {
+          activeBlockName = null;
+        } else if (value === 'ENDBLK') {
+          if (currentEntity && activeBlockName && blocks[activeBlockName]) {
+            finalizeEntity(currentEntity, blocks[activeBlockName], layers);
+            currentEntity = null;
           }
-       } else if (activeBlockName) {
-           if (currentEntity) {
-               if (inPolyline && currentEntity._originalType === 'POLYLINE') {
-                   parsePolylineProperty(code, value, currentEntity, encoding);
-               } else {
-                   parseProperty(code, value, currentEntity, encoding);
-               }
-           } else {
-              // Parse Block Definition Properties (e.g. Base Point)
-              const valNum = parseFloat(value);
-              if (code === 10) {
-                 if (!blockBasePoints[activeBlockName]) blockBasePoints[activeBlockName] = { x: 0, y: 0 };
-                 blockBasePoints[activeBlockName].x = valNum;
-              } else if (code === 20) {
-                 if (!blockBasePoints[activeBlockName]) blockBasePoints[activeBlockName] = { x: 0, y: 0 };
-                 blockBasePoints[activeBlockName].y = valNum;
-              }
-           }
-       } else {
-           if (code === 2) {
-               activeBlockName = value;
-               blocks[activeBlockName] = [];
-               blockBasePoints[activeBlockName] = { x: 0, y: 0 };
-           }
-       }
+          activeBlockName = null;
+        } else {
+          if (activeBlockName) {
+            handleEntityStart(value,
+              (ent) => {
+                if (!blocks[activeBlockName!]) blocks[activeBlockName!] = [];
+                finalizeEntity(ent, blocks[activeBlockName!], layers);
+              },
+              () => currentEntity,
+              (e) => currentEntity = e,
+              () => inPolyline,
+              (b) => inPolyline = b
+            );
+          }
+        }
+      } else if (activeBlockName) {
+        if (currentEntity) {
+          if (inPolyline && currentEntity._originalType === 'POLYLINE') {
+            parsePolylineProperty(code, value, currentEntity, encoding);
+          } else {
+            parseProperty(code, value, currentEntity, encoding);
+          }
+        } else {
+          // Parse Block Definition Properties (e.g. Base Point)
+          const valNum = parseFloat(value);
+          if (code === 10) {
+            if (!blockBasePoints[activeBlockName]) blockBasePoints[activeBlockName] = { x: 0, y: 0 };
+            blockBasePoints[activeBlockName].x = valNum;
+          } else if (code === 20) {
+            if (!blockBasePoints[activeBlockName]) blockBasePoints[activeBlockName] = { x: 0, y: 0 };
+            blockBasePoints[activeBlockName].y = valNum;
+          }
+        }
+      } else {
+        if (code === 2) {
+          activeBlockName = value;
+          blocks[activeBlockName] = [];
+          blockBasePoints[activeBlockName] = { x: 0, y: 0 };
+        }
+      }
     }
 
     // --- ENTITIES SECTION ---
     if (section === 'ENTITIES') {
       if (code === 0) {
-        handleEntityStart(value, 
-            (ent) => finalizeEntity(ent, entities, layers),
-            () => currentEntity, 
-            (e) => currentEntity = e,
-            () => inPolyline,
-            (b) => inPolyline = b
+        handleEntityStart(value,
+          (ent) => finalizeEntity(ent, entities, layers),
+          () => currentEntity,
+          (e) => currentEntity = e,
+          () => inPolyline,
+          (b) => inPolyline = b
         );
       } else if (currentEntity) {
         if (inPolyline && currentEntity._originalType === 'POLYLINE') {
-            parsePolylineProperty(code, value, currentEntity, encoding);
+          parsePolylineProperty(code, value, currentEntity, encoding);
         } else {
-            parseProperty(code, value, currentEntity, encoding);
+          parseProperty(code, value, currentEntity, encoding);
         }
       }
     }
@@ -192,58 +206,59 @@ export const parseDxf = (dxfContent: string, encoding: string = 'utf-8'): DxfDat
   return {
     entities,
     layers: Array.from(layers).sort(),
+    layerDictionary,
     blocks,
     blockBasePoints
   };
 };
 
 const handleEntityStart = (
-    typeStr: string,
-    onFinalize: (e: Partial<DxfEntity>) => void,
-    getCurrent: () => Partial<DxfEntity> | null,
-    setCurrent: (e: Partial<DxfEntity> | null) => void,
-    getInPolyline: () => boolean,
-    setInPolyline: (b: boolean) => void
+  typeStr: string,
+  onFinalize: (e: Partial<DxfEntity>) => void,
+  getCurrent: () => Partial<DxfEntity> | null,
+  setCurrent: (e: Partial<DxfEntity> | null) => void,
+  getInPolyline: () => boolean,
+  setInPolyline: (b: boolean) => void
 ) => {
-    const current = getCurrent();
-    const inPoly = getInPolyline();
+  const current = getCurrent();
+  const inPoly = getInPolyline();
 
-    // Explicit POLYLINE sequence handling
-    if (typeStr === 'POLYLINE') {
-        if (current && !inPoly) onFinalize(current);
-        setInPolyline(true);
-        setCurrent({ type: EntityType.LWPOLYLINE, layer: '0', vertices: [], _originalType: 'POLYLINE' });
-        return;
-    } 
-    
-    // VERTEX is child of POLYLINE
-    if (typeStr === 'VERTEX') return;
-    
-    // SEQEND terminates a sequence (POLYLINE or INSERT+ATTRIBs)
-    if (typeStr === 'SEQEND') {
-        if (inPoly && current) {
-            // End of Polyline sequence
-            onFinalize(current);
-            setCurrent(null);
-            setInPolyline(false);
-        } else if (current) {
-            // End of Insert/Attrib sequence (INSERT and ATTRIBs are already added as flat entities)
-            onFinalize(current);
-            setCurrent(null);
-        }
-        return;
-    }
+  // Explicit POLYLINE sequence handling
+  if (typeStr === 'POLYLINE') {
+    if (current && !inPoly) onFinalize(current);
+    setInPolyline(true);
+    setCurrent({ type: EntityType.LWPOLYLINE, layer: '0', vertices: [], _originalType: 'POLYLINE' });
+    return;
+  }
 
-    // Normal entity start: Finalize previous
-    if (inPoly) {
-        // We shouldn't normally get here if SEQEND exists, but just in case
-        if (current) onFinalize(current);
-        setInPolyline(false);
+  // VERTEX is child of POLYLINE
+  if (typeStr === 'VERTEX') return;
+
+  // SEQEND terminates a sequence (POLYLINE or INSERT+ATTRIBs)
+  if (typeStr === 'SEQEND') {
+    if (inPoly && current) {
+      // End of Polyline sequence
+      onFinalize(current);
+      setCurrent(null);
+      setInPolyline(false);
     } else if (current) {
-        onFinalize(current);
+      // End of Insert/Attrib sequence (INSERT and ATTRIBs are already added as flat entities)
+      onFinalize(current);
+      setCurrent(null);
     }
+    return;
+  }
 
-    setCurrent({ type: mapType(typeStr), layer: '0', vertices: [], _originalType: typeStr });
+  // Normal entity start: Finalize previous
+  if (inPoly) {
+    // We shouldn't normally get here if SEQEND exists, but just in case
+    if (current) onFinalize(current);
+    setInPolyline(false);
+  } else if (current) {
+    onFinalize(current);
+  }
+
+  setCurrent({ type: mapType(typeStr), layer: '0', vertices: [], _originalType: typeStr });
 };
 
 const mapType = (typeStr: string): EntityType => {
@@ -262,32 +277,38 @@ const mapType = (typeStr: string): EntityType => {
 };
 
 const parsePolylineProperty = (code: number, value: string, entity: Partial<DxfEntity>, encoding: string) => {
-    const valNum = parseFloat(value);
-    if (code === 8) entity.layer = decodeDxfString(value, encoding);
-    else if (code === 70) { if ((parseInt(value) & 1) === 1) entity.closed = true; }
-    else if (code === 10) {
-        if (!entity.vertices) entity.vertices = [];
-        entity.vertices.push({ x: valNum, y: 0 });
-    } else if (code === 20) {
-        if (entity.vertices && entity.vertices.length > 0) {
-            entity.vertices[entity.vertices.length - 1].y = valNum;
-        }
+  const valNum = parseFloat(value);
+  if (code === 8) entity.layer = decodeDxfString(value, encoding);
+  else if (code === 70) { if ((parseInt(value) & 1) === 1) entity.closed = true; }
+  else if (code === 10) {
+    if (!entity.vertices) entity.vertices = [];
+    entity.vertices.push({ x: valNum, y: 0 });
+  } else if (code === 20) {
+    if (entity.vertices && entity.vertices.length > 0) {
+      entity.vertices[entity.vertices.length - 1].y = valNum;
     }
+  } else if (code === 62) {
+    entity.color = parseInt(value, 10);
+  } else if (code === 6) {
+    entity.lineType = value;
+  }
 };
 
 const parseProperty = (code: number, value: string, entity: Partial<DxfEntity>, encoding: string) => {
   const valNum = parseFloat(value);
-  
+
   switch (code) {
     case 8: entity.layer = decodeDxfString(value, encoding); break;
-    
-    case 10: 
+    case 62: entity.color = parseInt(value, 10); break;
+    case 6: entity.lineType = value; break;
+
+    case 10:
       if (!entity.start) entity.start = { x: 0, y: 0 };
       if (!entity.center) entity.center = { x: 0, y: 0 };
       if (entity.type === EntityType.LWPOLYLINE) entity.vertices?.push({ x: valNum, y: 0 });
       else { entity.start.x = valNum; entity.center.x = valNum; }
       break;
-    case 20: 
+    case 20:
       if (entity.type === EntityType.LWPOLYLINE) {
         const lastV = entity.vertices ? entity.vertices[entity.vertices.length - 1] : null;
         if (lastV) lastV.y = valNum;
@@ -296,96 +317,89 @@ const parseProperty = (code: number, value: string, entity: Partial<DxfEntity>, 
         if (entity.center) entity.center.y = valNum;
       }
       break;
-      
-    case 11: 
-       if (entity._originalType === 'MTEXT') {
-           if (!entity.xAxis) entity.xAxis = { x: 0, y: 0 };
-           entity.xAxis.x = valNum;
-       } else {
-           if (!entity.end) entity.end = { x: 0, y: 0 };
-           entity.end.x = valNum;
-       }
-       break;
-    case 21: 
-       if (entity._originalType === 'MTEXT') {
-           if (!entity.xAxis) entity.xAxis = { x: 0, y: 0 };
-           entity.xAxis.y = valNum;
-       } else {
-           if (!entity.end) entity.end = { x: 0, y: 0 };
-           entity.end.y = valNum;
-       }
-       break;
 
-    case 13: 
+    case 11:
+      if (entity._originalType === 'MTEXT') {
+        if (!entity.xAxis) entity.xAxis = { x: 0, y: 0 };
+        entity.xAxis.x = valNum;
+      } else {
+        if (!entity.end) entity.end = { x: 0, y: 0 };
+        entity.end.x = valNum;
+      }
+      break;
+    case 21:
+      if (entity._originalType === 'MTEXT') {
+        if (!entity.xAxis) entity.xAxis = { x: 0, y: 0 };
+        entity.xAxis.y = valNum;
+      } else {
+        if (!entity.end) entity.end = { x: 0, y: 0 };
+        entity.end.y = valNum;
+      }
+      break;
+
+    case 13:
       if (!entity.measureStart) entity.measureStart = { x: 0, y: 0 };
       entity.measureStart.x = valNum; break;
-    case 23: 
+    case 23:
       if (!entity.measureStart) entity.measureStart = { x: 0, y: 0 };
       entity.measureStart.y = valNum; break;
-    case 14: 
+    case 14:
       if (!entity.measureEnd) entity.measureEnd = { x: 0, y: 0 };
       entity.measureEnd.x = valNum; break;
-    case 24: 
+    case 24:
       if (!entity.measureEnd) entity.measureEnd = { x: 0, y: 0 };
       entity.measureEnd.y = valNum; break;
 
     case 40: entity.radius = valNum; break;
-    case 41: 
+    case 41:
       if (!entity.scale) entity.scale = { x: valNum, y: valNum };
       else entity.scale.x = valNum;
       break;
-    case 42: 
+    case 42:
       if (!entity.scale) entity.scale = { x: 1, y: 1 };
       entity.scale.y = valNum;
       break;
 
     case 50: // Angle / Rotation
       if (entity._originalType === 'MTEXT') {
-          // HEURISTIC: Fix for incorrect Text Direction
-          // Spec says MTEXT angle is in Radians. However, many files (and some exporters) use Degrees.
-          // If value is > 2PI (6.28), it is definitely Degrees (e.g. 90, 270).
-          // If value is exactly 0, it works either way.
-          // We assume if it's large, it's degrees.
-          if (Math.abs(valNum) > 6.28319) {
-             entity.startAngle = valNum; // Already degrees
-          } else {
-             entity.startAngle = valNum * (180 / Math.PI); // Convert Rad -> Deg
-          }
+        // HEURISTIC: Fix for incorrect Text Direction
+        if (Math.abs(valNum) > 6.28319) {
+          entity.startAngle = valNum; // Already degrees
+        } else {
+          entity.startAngle = valNum * (180 / Math.PI); // Convert Rad -> Deg
+        }
       } else if (entity.type === EntityType.INSERT) {
-          entity.rotation = valNum;
+        entity.rotation = valNum;
       } else {
-          // TEXT and ATTRIB angle is in degrees
-          entity.startAngle = valNum; 
+        entity.startAngle = valNum;
       }
       break;
-      
+
     case 51: entity.endAngle = valNum; break;
     case 66:
-        if (entity.type === EntityType.INSERT) {
-            entity.hasAttributes = parseInt(value) === 1;
-        }
-        break;
-    case 70: 
-        const valInt = parseInt(value);
-        if (entity.type === EntityType.LWPOLYLINE && (valInt & 1) === 1) entity.closed = true; 
-        if (entity.type === EntityType.ATTRIB && (valInt & 1) === 1) entity.invisible = true;
-        break;
+      if (entity.type === EntityType.INSERT) {
+        entity.hasAttributes = parseInt(value) === 1;
+      }
+      break;
+    case 70:
+      const valInt = parseInt(value);
+      if (entity.type === EntityType.LWPOLYLINE && (valInt & 1) === 1) entity.closed = true;
+      if (entity.type === EntityType.ATTRIB && (valInt & 1) === 1) entity.invisible = true;
+      break;
     case 1: entity.text = decodeDxfString(value, encoding); break;
-    case 2: 
-        // Allow Block Name for INSERT and DIMENSION (Group 2 refers to block name for both)
-        if (entity.type === EntityType.INSERT || entity.type === EntityType.DIMENSION) {
-            entity.blockName = value; 
-        }
-        break;
+    case 2:
+      if (entity.type === EntityType.INSERT || entity.type === EntityType.DIMENSION) {
+        entity.blockName = value;
+      }
+      break;
   }
 };
 
 const finalizeEntity = (raw: Partial<DxfEntity>, list: DxfEntity[], layers: Set<string>) => {
   if (raw.type === EntityType.UNKNOWN) return;
-  
-  // Prefer MTEXT direction vector if present and non-zero
+
   if (raw._originalType === 'MTEXT' && raw.xAxis && (raw.xAxis.x !== 0 || raw.xAxis.y !== 0)) {
-      raw.startAngle = Math.atan2(raw.xAxis.y, raw.xAxis.x) * (180 / Math.PI);
+    raw.startAngle = Math.atan2(raw.xAxis.y, raw.xAxis.x) * (180 / Math.PI);
   }
 
   if (raw.layer) layers.add(raw.layer);
