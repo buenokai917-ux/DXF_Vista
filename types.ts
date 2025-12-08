@@ -75,6 +75,18 @@ export interface DxfData {
 
 export type LayerColors = Record<string, string>;
 
+export interface AnalysisExportPayload {
+  name: string;
+  createdAt: string;
+  layerConfig: Record<SemanticLayer, string[]>;
+  splitRegions: ViewportRegion[] | null;
+  mergedViewData?: MergedViewData;
+  data: DxfData;
+  activeLayers: string[];
+  filledLayers: string[];
+  step: 'raw' | 'split' | 'merge';
+}
+
 export interface Bounds {
   minX: number;
   minY: number;

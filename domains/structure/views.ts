@@ -6,11 +6,9 @@ import { boundsOverlap, expandBounds, isPointInBounds, prioritizeLayers } from '
 import {
   calculateMergeVector,
   getEntityBounds,
-  getGridIntersections,
-  groupEntitiesByProximity,
-  findTitleForBounds,
-  parseViewportTitle
+  getGridIntersections
 } from '../../utils/geometryUtils';
+import { calculateSplitRegions } from './splitService';
 
 export const runCalculateSplitRegions = (
   activeProject: ProjectFile,
@@ -18,104 +16,9 @@ export const runCalculateSplitRegions = (
   setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>,
   suppressAlert = false
 ): ViewportRegion[] | null => {
-  const resultLayer = 'VIEWPORT_CALC';
-  const debugLayer = 'VIEWPORT_DEBUG';
-
-  const axisLayers = [
-      ...activeProject.layerConfig[SemanticLayer.AXIS],
-      ...activeProject.layerConfig[SemanticLayer.AXIS_OTHER]
-  ];
-
-  if (axisLayers.length === 0) {
-    if (!suppressAlert) alert('No AXIS layers configured. Please check Layer Configuration.');
-    return null;
-  }
-
-  const axisLines = extractEntities(axisLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
-    .filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
-
-  if (axisLines.length === 0) {
-    if (!suppressAlert) console.log('No AXIS lines found in configured layers.');
-    return null;
-  }
-
-  // Use all text or specific title layers if available
-  const titleLayers = activeProject.layerConfig[SemanticLayer.VIEWPORT_TITLE];
-  const useSpecificTitleLayers = titleLayers.length > 0;
-  
-  const allText = extractEntities(
-      useSpecificTitleLayers ? titleLayers : activeProject.data.layers, 
-      activeProject.data.entities, 
-      activeProject.data.blocks, 
-      activeProject.data.blockBasePoints
-  ).filter(e => e.type === EntityType.TEXT);
-
-  const allLines = extractEntities(activeProject.data.layers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
-    .filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
-
-  const clusters = groupEntitiesByProximity(axisLines, 5000);
-
-  const newEntities: DxfEntity[] = [];
-  const debugEntities: DxfEntity[] = [];
-  const regions: ViewportRegion[] = [];
-
-  clusters.forEach((box, i) => {
-    // If specific title layers are set, restrict search to those
-    const { title, scannedBounds } = findTitleForBounds(box, allText, allLines, useSpecificTitleLayers ? '' : undefined);
-    const label = title || `BLOCK ${i + 1}`;
-
-    regions.push({
-      bounds: box,
-      title: label,
-      info: parseViewportTitle(label)
-    });
-
-    const rect: DxfEntity = {
-      type: EntityType.LWPOLYLINE,
-      layer: resultLayer,
-      closed: true,
-      vertices: [
-        { x: box.minX, y: box.minY },
-        { x: box.maxX, y: box.minY },
-        { x: box.maxX, y: box.maxY },
-        { x: box.minX, y: box.maxY }
-      ]
-    };
-    newEntities.push(rect);
-
-    newEntities.push({
-      type: EntityType.TEXT,
-      layer: resultLayer,
-      text: label,
-      start: { x: box.minX, y: box.maxY + 500 },
-      radius: 250 // Shrink font size (1/4 original)
-    });
-
-    scannedBounds.forEach(sb => {
-      debugEntities.push({
-        type: EntityType.LWPOLYLINE,
-        layer: debugLayer,
-        closed: true,
-        vertices: [
-          { x: sb.minX, y: sb.minY },
-          { x: sb.maxX, y: sb.minY },
-          { x: sb.maxX, y: sb.maxY },
-          { x: sb.minX, y: sb.maxY }
-        ]
-      });
-    });
-  });
-
-  if (newEntities.length === 0) {
-    if (!suppressAlert) console.log('Could not determine split regions.');
-    return null;
-  }
-
-  const updatedData = {
-    ...activeProject.data,
-    entities: [...activeProject.data.entities, ...newEntities, ...debugEntities],
-    layers: prioritizeLayers(activeProject.data.layers, [resultLayer, debugLayer])
-  };
+  const calc = calculateSplitRegions(activeProject, suppressAlert);
+  if (!calc) return null;
+  const { updatedData, regions, resultLayer, debugLayer } = calc;
 
   setLayerColors(prev => ({ ...prev, [resultLayer]: '#FF00FF', [debugLayer]: '#444444' }));
 
@@ -130,7 +33,7 @@ export const runCalculateSplitRegions = (
     })
   );
 
-  if (!suppressAlert) console.log(`Found ${clusters.length} regions.`);
+  if (!suppressAlert) console.log(`Found ${regions.length} regions.`);
   return regions;
 };
 

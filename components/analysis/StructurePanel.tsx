@@ -1,7 +1,8 @@
 
-import React from 'react';
+import React, { useRef } from 'react';
 import { ProjectFile, SemanticLayer } from '../../types';
 import { runCalculateSplitRegions, runMergeViews } from '../../domains/structure/views';
+import { exportAnalysisState, importAnalysisState } from '../../domains/structure/analysisPersistence';
 import { runCalculateColumns, runCalculateWalls } from '../../domains/structure/verticals';
 import { 
     runBeamRawGeneration, 
@@ -33,6 +34,15 @@ export const StructurePanel: React.FC<StructurePanelProps> = ({
     pickingTarget,
     setPickingTarget
 }) => {
+    const importInputRef = useRef<HTMLInputElement | null>(null);
+
+    const handleImportAnalysis = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file || !activeProject) return;
+        importAnalysisState(file, activeProject, setProjects, setLayerColors);
+        e.target.value = '';
+    };
+
     return (
         <div className="space-y-4 animate-in fade-in slide-in-from-left-2 duration-300">
             {/* Step 0: Layer Config */}
@@ -70,6 +80,33 @@ export const StructurePanel: React.FC<StructurePanelProps> = ({
                     >
                         Merge Views
                     </Button>
+                    <Button 
+                        onClick={() => activeProject && exportAnalysisState(activeProject)}
+                        disabled={!activeProject || isLoading || !activeProject.splitRegions}
+                        variant="secondary"
+                        className="w-full text-xs py-1.5"
+                        icon={<ArrowRightLeft size={12} className="text-blue-400" />}
+                    >
+                        Export Analysis
+                    </Button>
+                    <div className="relative">
+                        <input
+                            ref={importInputRef}
+                            type="file"
+                            accept="application/json"
+                            className="hidden"
+                            onChange={handleImportAnalysis}
+                        />
+                        <Button
+                            onClick={() => importInputRef.current?.click()}
+                            disabled={!activeProject || isLoading}
+                            variant="secondary"
+                            className="w-full text-xs py-1.5"
+                            icon={<ArrowRightLeft size={12} className="rotate-180 text-emerald-400" />}
+                        >
+                        Import Analysis
+                        </Button>
+                    </div>
                 </div>
             </div>
 
