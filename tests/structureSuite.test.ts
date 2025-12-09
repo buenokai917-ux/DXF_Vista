@@ -1,16 +1,14 @@
 ﻿import { describe, expect, it } from "vitest";
 import { parseDxf } from "../utils/dxfParser";
 import { ProjectFile, DxfEntity, SemanticLayer } from "../types";
-import {
-  runCalculateSplitRegions,
-  runMergeViews,
-  runCalculateColumns,
-  runCalculateWalls,
-  runBeamRawGeneration,
-  runBeamIntersectionProcessing,
-  runBeamAttributeMounting,
-  runBeamTopologyMerge,
-} from "../domains/structure";
+import { calculateSplitRegions } from "../domains/structure/splitService";
+import { calculateMergeViews } from "../domains/structure/mergeService";
+import { calculateColumns } from "../domains/structure/columnService";
+import { calculateWalls } from "../domains/structure/wallService";
+import { calculateBeamRawGeneration } from "../domains/structure/beams/beamRawService";
+import { calculateBeamIntersectionProcessing } from "../domains/structure/beams/beamIntersectionService";
+import { calculateBeamAttributeMounting } from "../domains/structure/beams/beamAttributeService";
+import { calculateBeamTopologyMerge } from "../domains/structure/beams/beamTopologyService";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -111,6 +109,191 @@ const createHarness = (parsedData: ReturnType<typeof parseDxf>, name: string): H
 const countOnLayer = (entities: DxfEntity[], layer: string) =>
   entities.filter((e) => e.layer.toUpperCase() === layer.toUpperCase()).length;
 
+const mergeEntitiesOntoProject = (
+  project: ProjectFile,
+  layer: string,
+  entities: DxfEntity[]
+): ProjectFile => {
+  const filtered = project.data.entities.filter((e) => e.layer !== layer);
+  const layers = project.data.layers.includes(layer) ? project.data.layers : [layer, ...project.data.layers];
+  return {
+    ...project,
+    data: { ...project.data, entities: [...filtered, ...entities], layers }
+  };
+};
+
+const mergeExtraLayer = (
+  project: ProjectFile,
+  layer: string,
+  entities: DxfEntity[]
+): ProjectFile => {
+  const layers = project.data.layers.includes(layer) ? project.data.layers : [layer, ...project.data.layers];
+  return {
+    ...project,
+    data: { ...project.data, entities: [...project.data.entities, ...entities], layers }
+  };
+};
+
+// --- Local wrappers to apply pure calculations to harness state (no UI) ---
+const applySplit = (
+  active: ProjectFile,
+  setProjects: Setter<ProjectFile[]>,
+  setLayerColors: Setter<Record<string, string>>,
+  suppressAlert = false
+) => {
+  const calc = calculateSplitRegions(active, suppressAlert);
+  if (!calc) return null;
+  const { updatedData, regions, resultLayer, debugLayer } = calc;
+  setLayerColors((prev) => ({ ...prev, [resultLayer]: "#FF00FF", [debugLayer]: "#444444" }));
+  setProjects((prev) =>
+    prev.map((p) => {
+      if (p.id === active.id) {
+        const newActive = new Set(p.activeLayers);
+        newActive.add(resultLayer);
+        return { ...p, data: updatedData, splitRegions: regions, activeLayers: newActive };
+      }
+      return p;
+    })
+  );
+  return regions;
+};
+
+const applyMerge = (active: ProjectFile, setProjects: Setter<ProjectFile[]>, setLayerColors: Setter<Record<string, string>>) => {
+  const calc = calculateMergeViews(active);
+  if (!calc) return;
+  const { updatedData, layersAdded, beamLabels } = calc;
+  setLayerColors((prev) => {
+    const next = { ...prev };
+    layersAdded.forEach((l) => (next[l] = next[l] || "#00FFFF"));
+    return next;
+  });
+  setProjects((prev) =>
+    prev.map((p) => {
+      if (p.id === active.id) {
+        const activeLayers = new Set(p.activeLayers);
+        layersAdded.forEach((l) => activeLayers.add(l));
+        return { ...p, data: updatedData, activeLayers, beamLabels };
+      }
+      return p;
+    })
+  );
+};
+
+const applyColumns = (
+  active: ProjectFile,
+  setProjects: Setter<ProjectFile[]>,
+  setLayerColors: Setter<Record<string, string>>
+) => {
+  const calc = calculateColumns(active);
+  if (!calc) return;
+  setProjects((prev) =>
+    prev.map((p) => {
+      if (p.id !== active.id) return p;
+      const updated = mergeEntitiesOntoProject(p, calc.resultLayer, calc.entities);
+      const activeLayers = new Set(updated.activeLayers);
+      activeLayers.add(calc.resultLayer);
+      return { ...updated, activeLayers, columns: calc.infos };
+    })
+  );
+};
+
+const applyWalls = (
+  active: ProjectFile,
+  setProjects: Setter<ProjectFile[]>,
+  setLayerColors: Setter<Record<string, string>>
+) => {
+  const calc = calculateWalls(active);
+  if (!calc) return;
+  setProjects((prev) =>
+    prev.map((p) => {
+      if (p.id !== active.id) return p;
+      const updated = mergeEntitiesOntoProject(p, calc.resultLayer, calc.entities);
+      const activeLayers = new Set(updated.activeLayers);
+      activeLayers.add(calc.resultLayer);
+      return { ...updated, activeLayers, walls: calc.infos };
+    })
+  );
+};
+
+const applyBeamStep1 = (
+  active: ProjectFile,
+  projects: ProjectFile[],
+  setProjects: Setter<ProjectFile[]>,
+  setLayerColors: Setter<Record<string, string>>
+) => {
+  const calc = calculateBeamRawGeneration(active, projects);
+  if (!calc) return;
+  setProjects((prev) =>
+    prev.map((p) => {
+      if (p.id !== active.id) return p;
+      const updated = mergeEntitiesOntoProject(p, calc.resultLayer, calc.entities);
+      const activeLayers = new Set(updated.activeLayers);
+      activeLayers.add(calc.resultLayer);
+      return { ...updated, activeLayers };
+    })
+  );
+};
+
+const applyBeamStep2 = (
+  active: ProjectFile,
+  projects: ProjectFile[],
+  setProjects: Setter<ProjectFile[]>,
+  setLayerColors: Setter<Record<string, string>>
+) => {
+  const calc = calculateBeamIntersectionProcessing(active, projects);
+  if (!calc) return;
+  setProjects((prev) =>
+    prev.map((p) => {
+      if (p.id !== active.id) return p;
+      let updated = mergeEntitiesOntoProject(p, calc.resultLayer, calc.entities);
+      updated = mergeExtraLayer(updated, calc.interLayer, calc.interEntities);
+      const activeLayers = new Set(updated.activeLayers);
+      activeLayers.add(calc.resultLayer);
+      activeLayers.add(calc.interLayer);
+      return { ...updated, activeLayers, beamStep2GeoInfos: calc.geoInfos, beamStep2InterInfos: calc.interInfos };
+    })
+  );
+};
+
+const applyBeamStep3 = (
+  active: ProjectFile,
+  projects: ProjectFile[],
+  setProjects: Setter<ProjectFile[]>,
+  setLayerColors: Setter<Record<string, string>>
+) => {
+  const calc = calculateBeamAttributeMounting(active, projects);
+  if (!calc) return;
+  setProjects((prev) =>
+    prev.map((p) => {
+      if (p.id !== active.id) return p;
+      const updated = mergeEntitiesOntoProject(p, calc.resultLayer, calc.entities);
+      const activeLayers = new Set(updated.activeLayers);
+      activeLayers.add(calc.resultLayer);
+      activeLayers.add(calc.debugLayer);
+      return { ...updated, activeLayers, beamStep3AttrInfos: calc.infos };
+    })
+  );
+};
+
+const applyBeamStep4 = (
+  active: ProjectFile,
+  projects: ProjectFile[],
+  setProjects: Setter<ProjectFile[]>,
+  setLayerColors: Setter<Record<string, string>>
+) => {
+  const calc = calculateBeamTopologyMerge(active, projects);
+  if (!calc) return;
+  setProjects((prev) =>
+    prev.map((p) => {
+      if (p.id !== active.id) return p;
+      const updated = mergeEntitiesOntoProject(p, calc.resultLayer, calc.entities);
+      const activeLayers = new Set(updated.activeLayers);
+      activeLayers.add(calc.resultLayer);
+      return { ...updated, activeLayers, beamStep4TopologyInfos: calc.infos };
+    })
+  );
+};
+
 describe("structure integration suite", () => {
   it("processes test_beam1.dxf through the full pipeline", async () => {
     const testDir = path.dirname(fileURLToPath(import.meta.url));
@@ -169,34 +352,34 @@ describe("structure integration suite", () => {
     expect(parsed.layers.length).toBeGreaterThan(0);
     expect(parsed.entities.length).toBeGreaterThan(0);
 
-    const regions = runCalculateSplitRegions(getActive(), setProjects, setLayerColors, true);
+    const regions = applySplit(getActive(), setProjects, setLayerColors, true);
     expect(regions?.length ?? 0).equal(3);
     expect(getActive().splitRegions?.length ?? 0).toBeGreaterThan(0);
 
-    runMergeViews(getActive(), setProjects, setLayerColors);
+    applyMerge(getActive(), setProjects, setLayerColors);
     const mergedLayers = getActive().data.layers.filter((i) => i.startsWith("MERGE_LABEL"));
     expect(mergedLayers.length).equal(2);
     expect(getActive().beamLabels?.length ?? 0).equal(203);
 
-    runCalculateColumns(getActive(), getProjects(), setProjects, setLayerColors);
+    applyColumns(getActive(), setProjects, setLayerColors);
     const columnCount = countOnLayer(getActive().data.entities, "COLU_CALC");
     expect(columnCount).equal(10);
 
-    runCalculateWalls(getActive(), getProjects(), setProjects, setLayerColors);
+    applyWalls(getActive(), setProjects, setLayerColors);
     const wallCount = countOnLayer(getActive().data.entities, "WALL_CALC");
     expect(wallCount).equal(63);
 
-    runBeamRawGeneration(getActive(), getProjects(), setProjects, setLayerColors);
+    applyBeamStep1(getActive(), getProjects(), setProjects, setLayerColors);
     const rawBeams = countOnLayer(getActive().data.entities, "BEAM_STEP1_RAW");
     expect(rawBeams).equal(122);
 
-    runBeamIntersectionProcessing(getActive(), getProjects(), setProjects, setLayerColors);
+    applyBeamStep2(getActive(), getProjects(), setProjects, setLayerColors);
     const step2Beams = getActive().beamStep2GeoInfos?.length ?? 0;
     const interCount = getActive().beamStep2InterInfos?.length ?? 0;
     expect(step2Beams).equal(88);
     expect(interCount).equal(63);
 
-    runBeamAttributeMounting(getActive(), getProjects(), setProjects, setLayerColors);
+    applyBeamStep3(getActive(), getProjects(), setProjects, setLayerColors);
     const step3Attrs = getActive().beamStep3AttrInfos?.length ?? 0;
     const codeCounts = (getActive().beamStep3AttrInfos || []).reduce<Record<string, number>>((acc, info) => {
       const key = info.code || "(empty)";
@@ -209,7 +392,7 @@ describe("structure integration suite", () => {
     expect(codeCounts["WKL8"] ?? 0).equal(7);
     expect(codeCounts["KL1"] ?? 0).equal(1);
 
-    runBeamTopologyMerge(getActive(), getProjects(), setProjects, setLayerColors);
+    applyBeamStep4(getActive(), getProjects(), setProjects, setLayerColors);
     const step4Topology = getActive().beamStep4TopologyInfos?.length ?? 0;
     const topoCodeCounts = (getActive().beamStep4TopologyInfos || []).reduce<Record<string, number>>((acc, info) => {
       const key = info.code || "(empty)";
@@ -225,6 +408,13 @@ describe("structure integration suite", () => {
     expect(topoCodeCounts["KL4"] ?? 0).equal(2);
     expect(topoCodeCounts["KL6"] ?? 0).equal(2);
     expect(topoCodeCounts["L10"] ?? 0).equal(8);
+    expect(topoCodeCounts["L13"] ?? 0).equal(2);
     expect(topoCodeCounts["(empty)"] ?? 0).equal(0);
+
+    const l13Lengths = (getActive().beamStep4TopologyInfos || [])
+      .filter((info) => info.code === "L13")
+      .map((info) => Math.round(info.length || 0))
+      .sort((a, b) => a - b);
+    expect(l13Lengths).deep.equal([2760, 3120]);
   });
 });

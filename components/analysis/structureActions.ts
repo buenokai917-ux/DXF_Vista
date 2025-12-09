@@ -1,14 +1,17 @@
 import React from 'react';
-import { ProjectFile, ViewportRegion } from '../../types';
-import { calculateMergeViews, MERGE_RESULT_LAYER_COLORS } from './mergeService';
-import { calculateSplitRegions } from './splitService';
+import { ProjectFile } from '../../types';
+import { calculateSplitRegions } from '../../domains/structure/splitService';
+import { calculateMergeViews, MERGE_RESULT_LAYER_COLORS } from '../../domains/structure/mergeService';
+import { calculateColumns } from '../../domains/structure/columnService';
+import { calculateWalls } from '../../domains/structure/wallService';
+import { updateProject } from '../../domains/structure/common';
 
 export const runCalculateSplitRegions = (
   activeProject: ProjectFile,
   setProjects: React.Dispatch<React.SetStateAction<ProjectFile[]>>,
   setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>,
   suppressAlert = false
-): ViewportRegion[] | null => {
+) => {
   const calc = calculateSplitRegions(activeProject, suppressAlert);
   if (!calc) return null;
   const { updatedData, regions, resultLayer, debugLayer } = calc;
@@ -64,4 +67,62 @@ export const runMergeViews = (
   );
 
   console.log(`Consolidated labels from ${mergedCount} view groups into ${layersAdded.join(', ')}.`);
+};
+
+export const runCalculateColumns = (
+  activeProject: ProjectFile,
+  projects: ProjectFile[],
+  setProjects: React.Dispatch<React.SetStateAction<ProjectFile[]>>,
+  setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>
+) => {
+  const calc = calculateColumns(activeProject);
+  if (!calc) {
+    console.log("No valid column objects found on column layers.");
+    return;
+  }
+
+  updateProject(
+    activeProject,
+    setProjects,
+    setLayerColors,
+    calc.resultLayer,
+    calc.entities,
+    '#f59e0b',
+    calc.contextLayers,
+    true,
+    undefined,
+    undefined,
+    () => ({ columns: calc.infos })
+  );
+
+  console.log(calc.message);
+};
+
+export const runCalculateWalls = (
+  activeProject: ProjectFile,
+  projects: ProjectFile[],
+  setProjects: React.Dispatch<React.SetStateAction<ProjectFile[]>>,
+  setLayerColors: React.Dispatch<React.SetStateAction<Record<string, string>>>
+) => {
+  const calc = calculateWalls(activeProject);
+  if (!calc) {
+    console.log("No valid wall segments found.");
+    return;
+  }
+
+  updateProject(
+    activeProject,
+    setProjects,
+    setLayerColors,
+    calc.resultLayer,
+    calc.entities,
+    '#94a3b8',
+    calc.contextLayers,
+    true,
+    undefined,
+    undefined,
+    () => ({ walls: calc.infos })
+  );
+
+  console.log(calc.message);
 };
