@@ -67,6 +67,7 @@ export const parseDxf = (dxfContent: string, encoding: string = 'utf-8'): DxfDat
   // For Entity Parsing
   let currentEntity: Partial<DxfEntity> | null = null;
   let inPolyline = false;
+  let inPolylineVertex = false;
 
   let i = 0;
 
@@ -148,14 +149,16 @@ export const parseDxf = (dxfContent: string, encoding: string = 'utf-8'): DxfDat
               () => currentEntity,
               (e) => currentEntity = e,
               () => inPolyline,
-              (b) => inPolyline = b
+              (b) => inPolyline = b,
+              () => inPolylineVertex,
+              (b) => inPolylineVertex = b
             );
           }
         }
       } else if (activeBlockName) {
         if (currentEntity) {
           if (inPolyline && currentEntity._originalType === 'POLYLINE') {
-            parsePolylineProperty(code, value, currentEntity, encoding);
+            parsePolylineProperty(code, value, currentEntity, encoding, inPolylineVertex);
           } else {
             parseProperty(code, value, currentEntity, encoding);
           }
@@ -187,11 +190,13 @@ export const parseDxf = (dxfContent: string, encoding: string = 'utf-8'): DxfDat
           () => currentEntity,
           (e) => currentEntity = e,
           () => inPolyline,
-          (b) => inPolyline = b
+          (b) => inPolyline = b,
+          () => inPolylineVertex,
+          (b) => inPolylineVertex = b
         );
       } else if (currentEntity) {
         if (inPolyline && currentEntity._originalType === 'POLYLINE') {
-          parsePolylineProperty(code, value, currentEntity, encoding);
+          parsePolylineProperty(code, value, currentEntity, encoding, inPolylineVertex);
         } else {
           parseProperty(code, value, currentEntity, encoding);
         }
@@ -218,7 +223,9 @@ const handleEntityStart = (
   getCurrent: () => Partial<DxfEntity> | null,
   setCurrent: (e: Partial<DxfEntity> | null) => void,
   getInPolyline: () => boolean,
-  setInPolyline: (b: boolean) => void
+  setInPolyline: (b: boolean) => void,
+  getInPolylineVertex: () => boolean,
+  setInPolylineVertex: (b: boolean) => void
 ) => {
   const current = getCurrent();
   const inPoly = getInPolyline();
@@ -227,12 +234,16 @@ const handleEntityStart = (
   if (typeStr === 'POLYLINE') {
     if (current && !inPoly) onFinalize(current);
     setInPolyline(true);
+    setInPolylineVertex(false);
     setCurrent({ type: EntityType.LWPOLYLINE, layer: '0', vertices: [], _originalType: 'POLYLINE' });
     return;
   }
 
   // VERTEX is child of POLYLINE
-  if (typeStr === 'VERTEX') return;
+  if (typeStr === 'VERTEX') {
+    setInPolylineVertex(true);
+    return;
+  }
 
   // SEQEND terminates a sequence (POLYLINE or INSERT+ATTRIBs)
   if (typeStr === 'SEQEND') {
@@ -240,12 +251,13 @@ const handleEntityStart = (
       // End of Polyline sequence
       onFinalize(current);
       setCurrent(null);
-      setInPolyline(false);
     } else if (current) {
       // End of Insert/Attrib sequence (INSERT and ATTRIBs are already added as flat entities)
       onFinalize(current);
       setCurrent(null);
     }
+    setInPolyline(false);
+    setInPolylineVertex(false);
     return;
   }
 
@@ -258,6 +270,7 @@ const handleEntityStart = (
     onFinalize(current);
   }
 
+  setInPolylineVertex(false);
   setCurrent({ type: mapType(typeStr), layer: '0', vertices: [], _originalType: typeStr });
 };
 
@@ -276,14 +289,16 @@ const mapType = (typeStr: string): EntityType => {
   }
 };
 
-const parsePolylineProperty = (code: number, value: string, entity: Partial<DxfEntity>, encoding: string) => {
+const parsePolylineProperty = (code: number, value: string, entity: Partial<DxfEntity>, encoding: string, inVertex: boolean) => {
   const valNum = parseFloat(value);
   if (code === 8) entity.layer = decodeDxfString(value, encoding);
   else if (code === 70) { if ((parseInt(value) & 1) === 1) entity.closed = true; }
   else if (code === 10) {
+    if (!inVertex) return; // Ignore POLYLINE header coords; only consume VERTEX positions
     if (!entity.vertices) entity.vertices = [];
     entity.vertices.push({ x: valNum, y: 0 });
   } else if (code === 20) {
+    if (!inVertex) return;
     if (entity.vertices && entity.vertices.length > 0) {
       entity.vertices[entity.vertices.length - 1].y = valNum;
     }
