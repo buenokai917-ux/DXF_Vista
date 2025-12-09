@@ -46,7 +46,7 @@ export const calculateSplitRegions = (
     project.data.entities,
     project.data.blocks,
     project.data.blockBasePoints
-  ).filter(e => e.type === EntityType.TEXT);
+  ).filter(e => e.type === EntityType.TEXT || e.type === EntityType.MTEXT);
 
   const allLines = extractEntities(project.data.layers, project.data.entities, project.data.blocks, project.data.blockBasePoints)
     .filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);

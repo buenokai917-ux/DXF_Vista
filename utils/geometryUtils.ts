@@ -64,11 +64,11 @@ export const getEntityBounds = (entity: DxfEntity): Bounds | null => {
     } else if ((entity.type === EntityType.CIRCLE || entity.type === EntityType.ARC) && entity.center && entity.radius) {
         update({ x: entity.center.x - entity.radius, y: entity.center.y - entity.radius });
         update({ x: entity.center.x + entity.radius, y: entity.center.y + entity.radius });
-    } else if ((entity.type === EntityType.TEXT || entity.type === EntityType.INSERT) && entity.start) {
+    } else if ((entity.type === EntityType.TEXT || entity.type === EntityType.MTEXT || entity.type === EntityType.INSERT) && entity.start) {
         // Basic point bounds for text/insert if full geometry not available
         update(entity.start);
         // Rough estimate for text bounds if not provided
-        if (entity.type === EntityType.TEXT && entity.text && entity.radius) {
+        if ((entity.type === EntityType.TEXT || entity.type === EntityType.MTEXT) && entity.text && entity.radius) {
             // radius acts as height for TEXT
             const h = entity.radius;
             const w = entity.text.length * h * 0.6;
@@ -646,7 +646,7 @@ export const calculateTotalBounds = (
             } else if ((ent.type === EntityType.CIRCLE || ent.type === EntityType.ARC) && ent.center && ent.radius) {
                 transformAndCheck(ent.center.x - ent.radius, ent.center.y - ent.radius);
                 transformAndCheck(ent.center.x + ent.radius, ent.center.y + ent.radius);
-            } else if ((ent.type === EntityType.TEXT || ent.type === EntityType.ATTRIB) && ent.start) {
+            } else if ((ent.type === EntityType.TEXT || ent.type === EntityType.MTEXT || ent.type === EntityType.ATTRIB) && ent.start) {
                 transformAndCheck(ent.start.x, ent.start.y);
             } else if (ent.type === EntityType.DIMENSION) {
                 if (ent.measureStart) transformAndCheck(ent.measureStart.x, ent.measureStart.y);

@@ -170,7 +170,7 @@ export const calculateMergeViews = (project: ProjectFile): MergeCalculationResul
 
   Object.entries(entitiesByLayer).forEach(([layer, ents]) => {
     if (!layerLooksLabel(layer)) return;
-    const texts = ents.filter(e => (e.type === EntityType.TEXT || e.type === EntityType.ATTRIB) && e.start);
+    const texts = ents.filter(e => (e.type === EntityType.TEXT || e.type === EntityType.MTEXT || e.type === EntityType.ATTRIB) && e.start);
     const nameHint = detectNameOrientation(layer);
     const leaderSegments = collectLeaderSegments(ents, texts);
     if (leaderSegments.length === 0) return;
@@ -200,7 +200,7 @@ export const calculateMergeViews = (project: ProjectFile): MergeCalculationResul
 
     const looksLabel = u.includes('标注') || u.includes('DIM') || u.includes('LABEL') || /^Z[\u4e00-\u9fa5]/.test(ent.layer);
     if (ent.type === EntityType.DIMENSION) return true;
-    if (ent.type === EntityType.TEXT || ent.type === EntityType.ATTRIB) return looksLabel;
+    if (ent.type === EntityType.TEXT || ent.type === EntityType.MTEXT || ent.type === EntityType.ATTRIB) return looksLabel;
     return looksLabel;
   };
 
@@ -278,7 +278,7 @@ export const calculateMergeViews = (project: ProjectFile): MergeCalculationResul
 
     targetLayers.forEach(layer => {
       const ents = mergedByLayer[layer] || [];
-      const texts = ents.filter(e => (e.type === EntityType.TEXT || e.type === EntityType.ATTRIB) && e.start);
+      const texts = ents.filter(e => (e.type === EntityType.TEXT || e.type === EntityType.MTEXT || e.type === EntityType.ATTRIB) && e.start);
       const leaders = ents.filter(e => e.type === EntityType.LINE || e.type === EntityType.LWPOLYLINE);
 
       texts.forEach((txt, idx) => {

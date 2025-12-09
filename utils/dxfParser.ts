@@ -68,6 +68,7 @@ export const parseDxf = (dxfContent: string, encoding: string = 'utf-8'): DxfDat
   let currentEntity: Partial<DxfEntity> | null = null;
   let inPolyline = false;
   let inPolylineVertex = false;
+  let currentPolylineHandle: string | undefined;
 
   let i = 0;
 
@@ -151,14 +152,16 @@ export const parseDxf = (dxfContent: string, encoding: string = 'utf-8'): DxfDat
               () => inPolyline,
               (b) => inPolyline = b,
               () => inPolylineVertex,
-              (b) => inPolylineVertex = b
+              (b) => inPolylineVertex = b,
+              () => currentPolylineHandle,
+              (h) => currentPolylineHandle = h
             );
           }
         }
       } else if (activeBlockName) {
         if (currentEntity) {
           if (inPolyline && currentEntity._originalType === 'POLYLINE') {
-            parsePolylineProperty(code, value, currentEntity, encoding, inPolylineVertex);
+            parsePolylineProperty(code, value, currentEntity, encoding, inPolylineVertex, () => currentPolylineHandle, (h) => currentPolylineHandle = h);
           } else {
             parseProperty(code, value, currentEntity, encoding);
           }
@@ -192,11 +195,13 @@ export const parseDxf = (dxfContent: string, encoding: string = 'utf-8'): DxfDat
           () => inPolyline,
           (b) => inPolyline = b,
           () => inPolylineVertex,
-          (b) => inPolylineVertex = b
+          (b) => inPolylineVertex = b,
+          () => currentPolylineHandle,
+          (h) => currentPolylineHandle = h
         );
       } else if (currentEntity) {
         if (inPolyline && currentEntity._originalType === 'POLYLINE') {
-          parsePolylineProperty(code, value, currentEntity, encoding, inPolylineVertex);
+          parsePolylineProperty(code, value, currentEntity, encoding, inPolylineVertex, () => currentPolylineHandle, (h) => currentPolylineHandle = h);
         } else {
           parseProperty(code, value, currentEntity, encoding);
         }
@@ -225,7 +230,9 @@ const handleEntityStart = (
   getInPolyline: () => boolean,
   setInPolyline: (b: boolean) => void,
   getInPolylineVertex: () => boolean,
-  setInPolylineVertex: (b: boolean) => void
+  setInPolylineVertex: (b: boolean) => void,
+  getPolylineHandle: () => string | undefined,
+  setPolylineHandle: (h: string | undefined) => void
 ) => {
   const current = getCurrent();
   const inPoly = getInPolyline();
@@ -236,6 +243,7 @@ const handleEntityStart = (
     setInPolyline(true);
     setInPolylineVertex(false);
     setCurrent({ type: EntityType.LWPOLYLINE, layer: '0', vertices: [], _originalType: 'POLYLINE' });
+    setPolylineHandle(undefined);
     return;
   }
 
@@ -271,6 +279,7 @@ const handleEntityStart = (
   }
 
   setInPolylineVertex(false);
+  setPolylineHandle(undefined);
   setCurrent({ type: mapType(typeStr), layer: '0', vertices: [], _originalType: typeStr });
 };
 
@@ -278,10 +287,11 @@ const mapType = (typeStr: string): EntityType => {
   switch (typeStr) {
     case 'LINE': return EntityType.LINE;
     case 'LWPOLYLINE': return EntityType.LWPOLYLINE;
+    case 'SPLINE': return EntityType.SPLINE;
     case 'CIRCLE': return EntityType.CIRCLE;
     case 'ARC': return EntityType.ARC;
     case 'TEXT': return EntityType.TEXT;
-    case 'MTEXT': return EntityType.TEXT;
+    case 'MTEXT': return EntityType.MTEXT;
     case 'DIMENSION': return EntityType.DIMENSION;
     case 'INSERT': return EntityType.INSERT;
     case 'ATTRIB': return EntityType.ATTRIB;
@@ -289,9 +299,20 @@ const mapType = (typeStr: string): EntityType => {
   }
 };
 
-const parsePolylineProperty = (code: number, value: string, entity: Partial<DxfEntity>, encoding: string, inVertex: boolean) => {
+const parsePolylineProperty = (
+  code: number,
+  value: string,
+  entity: Partial<DxfEntity>,
+  encoding: string,
+  inVertex: boolean,
+  getPolylineHandle: () => string | undefined,
+  setPolylineHandle: (h: string | undefined) => void
+) => {
   const valNum = parseFloat(value);
-  if (code === 8) entity.layer = decodeDxfString(value, encoding);
+  if (code === 5) {
+    setPolylineHandle(value);
+    entity.handle = value;
+  } else if (code === 8) entity.layer = decodeDxfString(value, encoding);
   else if (code === 70) { if ((parseInt(value) & 1) === 1) entity.closed = true; }
   else if (code === 10) {
     if (!inVertex) return; // Ignore POLYLINE header coords; only consume VERTEX positions
@@ -301,6 +322,15 @@ const parsePolylineProperty = (code: number, value: string, entity: Partial<DxfE
     if (!inVertex) return;
     if (entity.vertices && entity.vertices.length > 0) {
       entity.vertices[entity.vertices.length - 1].y = valNum;
+    }
+  } else if (code === 42) {
+    if (!inVertex) {
+      // In a SPLINE this is weight, but within POLYLINE header we can ignore
+      return;
+    }
+    const verts = entity.vertices;
+    if (verts && verts.length > 0) {
+      verts[verts.length - 1].bulge = valNum;
     }
   } else if (code === 62) {
     entity.color = parseInt(value, 10);
@@ -313,6 +343,7 @@ const parseProperty = (code: number, value: string, entity: Partial<DxfEntity>, 
   const valNum = parseFloat(value);
 
   switch (code) {
+    case 5: entity.handle = value; break;
     case 8: entity.layer = decodeDxfString(value, encoding); break;
     case 62: entity.color = parseInt(value, 10); break;
     case 6: entity.lineType = value; break;
@@ -321,12 +352,19 @@ const parseProperty = (code: number, value: string, entity: Partial<DxfEntity>, 
       if (!entity.start) entity.start = { x: 0, y: 0 };
       if (!entity.center) entity.center = { x: 0, y: 0 };
       if (entity.type === EntityType.LWPOLYLINE) entity.vertices?.push({ x: valNum, y: 0 });
+      else if (entity.type === EntityType.SPLINE) {
+        if (!entity.controlPoints) entity.controlPoints = [];
+        entity.controlPoints.push({ x: valNum, y: 0 });
+      }
       else { entity.start.x = valNum; entity.center.x = valNum; }
       break;
     case 20:
       if (entity.type === EntityType.LWPOLYLINE) {
         const lastV = entity.vertices ? entity.vertices[entity.vertices.length - 1] : null;
         if (lastV) lastV.y = valNum;
+      } else if (entity.type === EntityType.SPLINE) {
+        const last = entity.controlPoints ? entity.controlPoints[entity.controlPoints.length - 1] : null;
+        if (last) last.y = valNum;
       } else {
         if (entity.start) entity.start.y = valNum;
         if (entity.center) entity.center.y = valNum;
@@ -337,6 +375,9 @@ const parseProperty = (code: number, value: string, entity: Partial<DxfEntity>, 
       if (entity._originalType === 'MTEXT') {
         if (!entity.xAxis) entity.xAxis = { x: 0, y: 0 };
         entity.xAxis.x = valNum;
+      } else if (entity.type === EntityType.SPLINE) {
+        if (!entity.fitPoints) entity.fitPoints = [];
+        entity.fitPoints.push({ x: valNum, y: 0 });
       } else {
         if (!entity.end) entity.end = { x: 0, y: 0 };
         entity.end.x = valNum;
@@ -346,6 +387,9 @@ const parseProperty = (code: number, value: string, entity: Partial<DxfEntity>, 
       if (entity._originalType === 'MTEXT') {
         if (!entity.xAxis) entity.xAxis = { x: 0, y: 0 };
         entity.xAxis.y = valNum;
+      } else if (entity.type === EntityType.SPLINE) {
+        const lastFit = entity.fitPoints ? entity.fitPoints[entity.fitPoints.length - 1] : null;
+        if (lastFit) lastFit.y = valNum;
       } else {
         if (!entity.end) entity.end = { x: 0, y: 0 };
         entity.end.y = valNum;
@@ -372,15 +416,25 @@ const parseProperty = (code: number, value: string, entity: Partial<DxfEntity>, 
       //    边框宽度/显示高度等辅助信息，如果一股脑覆盖，会把真正的文字高度放大很多。
       //  => 这里对 MTEXT 只采纳第一次出现的 40，后续的 40 将被忽略。
       if (entity._originalType === 'MTEXT' && entity.radius !== undefined) break;
-      entity.radius = valNum;
+      if (entity.type === EntityType.SPLINE) {
+        if (!entity.knots) entity.knots = [];
+        entity.knots.push(valNum);
+      } else {
+        entity.radius = valNum;
+      }
       break;
     case 41:
       if (!entity.scale) entity.scale = { x: valNum, y: valNum };
       else entity.scale.x = valNum;
       break;
     case 42:
-      if (!entity.scale) entity.scale = { x: 1, y: 1 };
-      entity.scale.y = valNum;
+      if (entity.type === EntityType.SPLINE) {
+        if (!entity.weights) entity.weights = [];
+        entity.weights.push(valNum);
+      } else {
+        if (!entity.scale) entity.scale = { x: 1, y: 1 };
+        entity.scale.y = valNum;
+      }
       break;
 
     case 50: // Angle / Rotation
@@ -408,6 +462,7 @@ const parseProperty = (code: number, value: string, entity: Partial<DxfEntity>, 
       const valInt = parseInt(value);
       if (entity.type === EntityType.LWPOLYLINE && (valInt & 1) === 1) entity.closed = true;
       if (entity.type === EntityType.ATTRIB && (valInt & 1) === 1) entity.invisible = true;
+      if (entity.type === EntityType.SPLINE) entity.degree = valInt;
       break;
     case 1: entity.text = decodeDxfString(value, encoding); break;
     case 2:

@@ -59,7 +59,7 @@ export const collectBeamSources = (
 
     let rawEntities = extractEntities(beamLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints);
     let rawTextEntities = extractEntities(beamTextLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
-        .filter(e => e.type === EntityType.TEXT && !e.layer.toUpperCase().startsWith('Z_'));
+        .filter(e => (e.type === EntityType.TEXT || e.type === EntityType.MTEXT) && !e.layer.toUpperCase().startsWith('Z_'));
 
     const entities = filterEntitiesInBounds(rawEntities, baseBounds);
     const textEntities = filterEntitiesInBounds(rawTextEntities, baseBounds);
@@ -118,7 +118,7 @@ export const collectBeamSources = (
 
     if (labelLayers.length > 0) {
         const rawLabels = extractEntities(labelLayers, activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
-            .filter(e => e.type === EntityType.TEXT);
+            .filter(e => e.type === EntityType.TEXT || e.type === EntityType.MTEXT);
         const boundedLabels = filterEntitiesInBounds(rawLabels, baseBounds);
         scanForWidths(boundedLabels);
     }

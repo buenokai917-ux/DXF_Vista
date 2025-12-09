@@ -284,7 +284,7 @@ export const renderDxfToCanvas = ({
                 currCtx.arc(ent.center.x, ent.center.y, ent.radius, start, end);
                 currCtx.stroke();
             }
-            else if ((ent.type === EntityType.TEXT || ent.type === EntityType.ATTRIB) && ent.start && ent.text) {
+            else if ((ent.type === EntityType.TEXT || ent.type === EntityType.MTEXT || ent.type === EntityType.ATTRIB) && ent.start && ent.text) {
                 currCtx.save();
                 currCtx.translate(ent.start.x, ent.start.y);
                 currCtx.scale(1, -1);

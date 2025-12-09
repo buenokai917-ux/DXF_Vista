@@ -30,7 +30,7 @@ export const calculateBeamAttributeMounting = (
   const obstacleBounds = sources.obstacles.map(o => getEntityBounds(o)).filter((b): b is Bounds => !!b);
 
   const beams = extractEntities([sourceLayer], activeProject.data.entities, activeProject.data.blocks, activeProject.data.blockBasePoints)
-    .filter(e => e.type !== EntityType.TEXT);
+    .filter(e => e.type !== EntityType.TEXT && e.type !== EntityType.MTEXT);
   if (beams.length === 0) {
     return null;
   }

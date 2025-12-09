@@ -3,9 +3,11 @@
 export enum EntityType {
   LINE = 'LINE',
   LWPOLYLINE = 'LWPOLYLINE',
+  SPLINE = 'SPLINE',
   CIRCLE = 'CIRCLE',
   ARC = 'ARC',
   TEXT = 'TEXT',
+  MTEXT = 'MTEXT',
   DIMENSION = 'DIMENSION',
   INSERT = 'INSERT',
   ATTRIB = 'ATTRIB',
@@ -28,7 +30,12 @@ export interface Point {
   y: number;
 }
 
+export interface PolylineVertex extends Point {
+  bulge?: number; // DXF group code 42 for arc segments between vertices
+}
+
 export interface DxfEntity {
+  handle?: string; // DXF entity handle (group code 5)
   type: EntityType;
   layer: string;
   // Specific properties based on type
@@ -38,9 +45,14 @@ export interface DxfEntity {
   radius?: number;
   startAngle?: number; // In Degrees
   endAngle?: number;   // In Degrees
-  vertices?: Point[];
+  vertices?: PolylineVertex[];
   closed?: boolean;
   text?: string;
+  knots?: number[]; // For spline
+  controlPoints?: Point[]; // Spline control points (group 10/20)
+  fitPoints?: Point[]; // Spline fit points (group 11/21)
+  weights?: number[]; // Spline weights (group 42 in SPLINE context)
+  degree?: number; // Spline degree (group 71)
 
   // Explicit Visual Properties
   color?: number; // ACI Color (Group 62)
