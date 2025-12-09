@@ -350,7 +350,15 @@ const parseProperty = (code: number, value: string, entity: Partial<DxfEntity>, 
       if (!entity.measureEnd) entity.measureEnd = { x: 0, y: 0 };
       entity.measureEnd.y = valNum; break;
 
-    case 40: entity.radius = valNum; break;
+    case 40:
+      // NOTE:
+      //  - For TEXT/ARC/CIRCLE, group 40 是半径/高度，通常只出现一次。
+      //  - 对于 MTEXT，一些软件/插件会在同一实体里写入多个 40，后面的值用于
+      //    边框宽度/显示高度等辅助信息，如果一股脑覆盖，会把真正的文字高度放大很多。
+      //  => 这里对 MTEXT 只采纳第一次出现的 40，后续的 40 将被忽略。
+      if (entity._originalType === 'MTEXT' && entity.radius !== undefined) break;
+      entity.radius = valNum;
+      break;
     case 41:
       if (!entity.scale) entity.scale = { x: valNum, y: valNum };
       else entity.scale.x = valNum;

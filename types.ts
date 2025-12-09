@@ -69,6 +69,9 @@ export interface DxfEntity {
   // Metadata
   _originalType?: string;
   xAxis?: Point; // For MTEXT direction
+
+  // Space flag: 0 or undefined = model space, 1 = paper space (group code 67)
+  paperSpace?: number;
 }
 
 export interface DxfLayer {
